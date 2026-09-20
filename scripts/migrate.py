@@ -102,7 +102,7 @@ def apply_migrations(db_url: str, *, status_only: bool = False, dry_run: bool = 
 
         applied_now = []
         for migration in pending:
-            with conn:
+            try:
                 with conn.cursor() as cur:
                     cur.execute("SELECT pg_advisory_xact_lock(%s)", (LOCK_KEY,))
                     # Re-check after acquiring the transaction lock in case another
@@ -112,13 +112,17 @@ def apply_migrations(db_url: str, *, status_only: bool = False, dry_run: bool = 
                     if row:
                         if row[0] != migration.checksum:
                             raise RuntimeError(f"Migration {migration.version} checksum changed during apply")
-                        continue
-                    cur.execute(migration.sql)
-                    cur.execute(
-                        "INSERT INTO public.schema_migrations(version, name, checksum) VALUES (%s, %s, %s)",
-                        (migration.version, migration.name, migration.checksum),
-                    )
-                    applied_now.append(migration.version)
+                    else:
+                        cur.execute(migration.sql)
+                        cur.execute(
+                            "INSERT INTO public.schema_migrations(version, name, checksum) VALUES (%s, %s, %s)",
+                            (migration.version, migration.name, migration.checksum),
+                        )
+                        applied_now.append(migration.version)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
         return [f"applied {version}" for version in applied_now]
 
 
