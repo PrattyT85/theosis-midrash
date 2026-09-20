@@ -57,6 +57,9 @@ def ensure_tracking_table(cur) -> None:
             applied_at timestamptz NOT NULL DEFAULT now()
         )
     """)
+    # The MCP service only needs to read the tracking table; migrations run as
+    # the database administrator because some DDL requires elevated privileges.
+    cur.execute("GRANT SELECT ON public.schema_migrations TO midrash")
 
 
 def applied_migrations(cur) -> dict[str, tuple[str, str]]:

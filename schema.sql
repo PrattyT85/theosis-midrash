@@ -27,6 +27,8 @@ CREATE TABLE public.schema_migrations (
     CONSTRAINT schema_migrations_pkey PRIMARY KEY (version)
 );
 
+GRANT SELECT ON public.schema_migrations TO midrash;
+
 
 SET default_tablespace = '';
 
