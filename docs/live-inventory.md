@@ -5,7 +5,9 @@ This is a snapshot of the Midrash deployment on CT125 recorded during repository
 ## Service
 
 - systemd unit: `midrash.service`
-- endpoint: `0.0.0.0:8001/mcp`
+- endpoint: `192.168.1.130:8001/mcp`
+- service user: `midrash`
+- deployed repository commit: `e8de97c`
 - database: `midrash`
 - source service file was `/etc/systemd/system/midrash.service`
 
