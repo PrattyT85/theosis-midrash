@@ -9,6 +9,7 @@ import urllib.request
 from itertools import count
 import psycopg2
 from psycopg2.extras import execute_values
+from midrash_config import database_url
 
 LINK_FILES = [
     f"https://storage.googleapis.com/sefaria-export/links/links{i}.csv" for i in range(17)
@@ -29,7 +30,7 @@ def is_midrash_ref(ref: str, titles: list[str]) -> str | None:
 
 def main():
     conn = psycopg2.connect(
-        "dbname=midrash user=midrash host=/var/run/postgresql",
+        database_url(),
         options="-c client_encoding=UTF8",
     )
     conn.set_client_encoding("UTF8")
@@ -37,10 +38,15 @@ def main():
         with conn.cursor() as cur:
             cur.execute("SELECT sefaria_title FROM works ORDER BY length(sefaria_title) DESC")
             titles = [row[0] for row in cur.fetchall()]
+            cur.execute("SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname=current_database()")
+            encoding_row = cur.fetchone()
+            db_encoding = encoding_row[0] if encoding_row else "SQL_ASCII"
         conn.commit()
+        ascii_only = db_encoding.upper() == "SQL_ASCII"
 
         total_seen = 0
         total_matched = 0
+        skipped_nonascii = 0
         batch: list[tuple[str, str, str | None, str]] = []
         for file_url in LINK_FILES:
             print("Reading", file_url, flush=True)
@@ -60,9 +66,11 @@ def main():
                         continue
                     if not left or not right:
                         continue
-                    # CT125's SQL_ASCII database cannot safely store Hebrew
-                    # link refs; skip those rows rather than corrupting them.
-                    if not all(ord(char) < 128 for char in left + right):
+                    # The historical live database is SQL_ASCII. Preserve the
+                    # old safe behaviour there, but retain Hebrew on UTF-8
+                    # installations instead of silently replacing it.
+                    if ascii_only and not all(ord(char) < 128 for char in left + right):
+                        skipped_nonascii += 1
                         continue
                     if left_work:
                         source_ref, target_ref = left, right
@@ -80,9 +88,11 @@ def main():
                         "category_1": row.get("Category 1") or "",
                         "category_2": row.get("Category 2") or "",
                     }
-                    batch.append((ascii_safe(source_ref), ascii_safe(target_ref),
-                                  ascii_safe(row.get("Conection Type") or "") or None,
-                                  json.dumps({k: ascii_safe(str(v)) for k, v in metadata.items()}, ensure_ascii=True)))
+                    safe = ascii_safe if ascii_only else (lambda value: value or "")
+                    batch.append((safe(source_ref), safe(target_ref),
+                                  safe(row.get("Conection Type") or "") or "link",
+                                  json.dumps({k: safe(str(v)) for k, v in metadata.items()},
+                                             ensure_ascii=ascii_only)))
                     if len(batch) >= 2000:
                         # Deduplicate within the batch before ON CONFLICT, because
                         # PostgreSQL rejects two proposed updates to the same row.
@@ -108,7 +118,8 @@ def main():
                     SET metadata=EXCLUDED.metadata
                 """, batch, template="(%s,%s,%s,%s::jsonb)")
             conn.commit()
-        print("Complete; CSV rows seen:", total_seen, "matched:", total_matched, flush=True)
+        print("Complete; CSV rows seen:", total_seen, "matched:", total_matched,
+              "skipped non-ASCII:", skipped_nonascii, "encoding:", db_encoding, flush=True)
     finally:
         conn.close()
 

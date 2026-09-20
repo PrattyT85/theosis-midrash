@@ -7,6 +7,7 @@ import urllib.request
 from datetime import datetime, timezone
 import psycopg2
 from psycopg2.extras import Json
+from midrash_config import database_url
 
 BASE_SCHEMA = "https://storage.googleapis.com/sefaria-export/schemas/"
 API_BASE = "https://www.sefaria.org/api/v3/texts/"
@@ -55,10 +56,13 @@ def version_summary(v: dict) -> dict:
 
 
 def main():
-    conn = psycopg2.connect("dbname=midrash user=midrash host=/var/run/postgresql", options="-c client_encoding=UTF8")
+    conn = psycopg2.connect(database_url(), options="-c client_encoding=UTF8")
     conn.set_client_encoding("UTF8")
     try:
         with conn.cursor() as cur:
+            cur.execute("SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname=current_database()")
+            encoding_row = cur.fetchone()
+            ascii_only = (encoding_row[0] if encoding_row else "SQL_ASCII").upper() == "SQL_ASCII"
             cur.execute("""
                 SELECT w.id,w.sefaria_title,e.id,e.language,e.version_title,e.license,e.version_source,
                        s.sefaria_ref
@@ -94,7 +98,9 @@ def main():
                         categories=COALESCE(NULLIF(%s::text[], '{}'::text[]), categories),
                         description=COALESCE(%s,description), metadata=%s
  WHERE id=%s
- """, (he_title, categories, description, json.dumps(ascii_safe(work_meta), ensure_ascii=True), work_id))
+ """, (he_title, categories, description,
+       json.dumps(ascii_safe(work_meta) if ascii_only else work_meta,
+                  ensure_ascii=ascii_only), work_id))
 
                 api_data, api_url = ({}, None)
                 if sample_ref:
@@ -123,7 +129,9 @@ def main():
                 cur.execute("""
                     UPDATE editions SET license=%s, version_source=COALESCE(%s,version_source), metadata=metadata || %s::jsonb
                     WHERE id=%s
-                """, (new_license, matching.get("versionSource") if matching else None, json.dumps(ascii_safe(edition_meta), ensure_ascii=True), edition_id))
+                """, (new_license, matching.get("versionSource") if matching else None,
+                      json.dumps(ascii_safe(edition_meta) if ascii_only else edition_meta,
+                                 ensure_ascii=ascii_only), edition_id))
                 print(title, language, version_title, "=>", new_license, "available", len(available), "matched", bool(matching))
         conn.commit()
     finally:

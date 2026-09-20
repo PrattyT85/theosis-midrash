@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import psycopg2
 from psycopg2.extras import Json
+from midrash_config import database_url
 from midrash_import import CORE, import_edition, ref_for, clean
 
 EXT = {
@@ -75,13 +76,9 @@ EXT = {
 
 
 def main():
-    with psycopg2.connect("dbname=midrash user=midrash host=/var/run/postgresql") as conn:
+    with psycopg2.connect(database_url()) as conn:
         conn.set_client_encoding("UTF8")
         with conn.cursor() as cur:
-            # Midrash Tehillim's original export has one key per Psalm/comment.
-            # Rebuild that edition with the corrected reference mapping.
-            if "Midrash Tehillim" in EXT:
-                pass
             for title, meta in EXT.items():
                 cur.execute("""
                     INSERT INTO works(sefaria_title, hebrew_title, categories, corpus, source_url)

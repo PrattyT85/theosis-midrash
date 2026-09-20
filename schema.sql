@@ -2,7 +2,6 @@
 -- PostgreSQL database dump
 --
 
-\restrict e6UavTzbBxPuedEqWDqypSwrLrsELJ1EyUdujOMId638M8qYLMvcHD88h03HU9j
 
 -- Dumped from database version 16.14 (Ubuntu 16.14-1.pgdg24.04+1)
 -- Dumped by pg_dump version 16.14 (Ubuntu 16.14-1.pgdg24.04+1)
@@ -17,19 +16,6 @@ SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
-
---
--- Name: vector; Type: EXTENSION; Schema: -; Owner: -
---
-
-CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;
-
-
---
--- Name: EXTENSION vector; Type: COMMENT; Schema: -; Owner: -
---
-
-COMMENT ON EXTENSION vector IS 'vector data type and ivfflat and hnsw access methods';
 
 
 SET default_tablespace = '';
@@ -151,7 +137,7 @@ CREATE TABLE public.source_links (
     id bigint NOT NULL,
     source_ref text NOT NULL,
     target_ref text NOT NULL,
-    link_type text,
+    link_type text DEFAULT 'link'::text NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL
 );
 
@@ -373,6 +359,4 @@ ALTER TABLE ONLY public.segments
 --
 -- PostgreSQL database dump complete
 --
-
-\unrestrict e6UavTzbBxPuedEqWDqypSwrLrsELJ1EyUdujOMId638M8qYLMvcHD88h03HU9j
 

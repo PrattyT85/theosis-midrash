@@ -49,6 +49,10 @@ Results identify the exact work, Sefaria reference, edition, language, licence, 
 - MCP Python SDK
 - Network access to the Sefaria Export bucket for ingestion
 
+The tested dependency set is recorded in `requirements.lock`; development and
+test dependencies are in `requirements-dev.lock`. Use the lock file for a
+reproducible deployment rather than installing unbounded latest releases.
+
 A UTF-8 database is recommended for a new installation. The original live database uses `SQL_ASCII` and the importer explicitly controls client encoding and Hebrew search normalization for that deployment.
 
 ## Installation
@@ -71,9 +75,13 @@ Create an environment and install dependencies:
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install -r requirements.lock
 export MIDRASH_DATABASE_URL='postgresql://midrash@/midrash?host=/var/run/postgresql'
 ```
+
+All import and upgrade scripts honour `MIDRASH_DATABASE_URL`. A `--db` option
+is also available on the main importer and takes precedence over the
+environment.
 
 Import the initial bilingual corpus:
 
@@ -93,6 +101,10 @@ python scripts/midrash_fix_refs.py
 ```
 
 The later scripts are repeatable upgrades, but review their source and the Sefaria export metadata before running them against an existing database.
+Imports now store a SHA-256 source hash in edition metadata and skip an
+unchanged edition. They also stop on generated-reference collisions instead of
+silently overwriting a segment. A changed edition is still rebuilt inside the
+surrounding transaction, so take a database backup before bulk upgrades.
 
 Start the MCP server:
 
@@ -101,7 +113,13 @@ export MIDRASH_DATABASE_URL='postgresql://midrash@/midrash?host=/var/run/postgre
 python scripts/midrash_server.py
 ```
 
-For a systemd deployment, use `deploy/midrash.service` as a template. Change the paths, service account, and environment file for the target host. Do not expose the database directly to the network.
+For a systemd deployment, use `deploy/midrash.service` as a template. Change
+the paths, service account, database URL, and `MIDRASH_HOST` for the target
+host. The template binds the HTTP service to `192.168.1.130` rather than all
+interfaces; do not expose the database directly to the network. The MCP
+endpoint does not provide user authentication, so restrict port 8001 with a
+host firewall or place it behind an authenticated reverse proxy before using
+it outside a trusted LAN.
 
 ## Open WebUI
 
@@ -119,7 +137,12 @@ Bulk ingestion uses Sefaria's structured Export/GCS corpus. The repository recor
 
 ## Security notes
 
-The original live service runs as root and listens on `0.0.0.0:8001`. For a new deployment, run it under a dedicated Unix account, use systemd sandboxing, and restrict access to the Open WebUI/Hermes clients or bind to the required LAN address only.
+The repository service runs under a dedicated Unix account, uses systemd
+sandboxing, and binds to a configurable address. The live database created
+before repository separation uses `SQL_ASCII`; that deployment currently skips
+non-ASCII source links. New installations should use UTF-8. Migrating the live
+database requires a backup and a `pg_dump`/`pg_restore` migration; do not change
+the encoding in place.
 
 ## Source design
 

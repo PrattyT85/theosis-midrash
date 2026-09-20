@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 import psycopg2
+from midrash_config import database_url
 from midrash_import import ref_for
 
-with psycopg2.connect('dbname=midrash user=midrash host=/var/run/postgresql', options='-c client_encoding=UTF8') as conn:
+with psycopg2.connect(database_url(), options='-c client_encoding=UTF8') as conn:
     conn.set_client_encoding('UTF8')
     with conn.cursor() as cur:
         cur.execute("""

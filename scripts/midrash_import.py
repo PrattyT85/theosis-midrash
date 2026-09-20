@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Download selected Sefaria Export editions and import them into midrash."""
 from __future__ import annotations
-import argparse, html, json, os, re, urllib.request
+import argparse, hashlib, html, json, os, re, urllib.request
 from datetime import datetime, timezone
+
 import psycopg2
 from psycopg2.extras import Json
+
+from midrash_config import database_url
 
 BASE = "https://storage.googleapis.com/sefaria-export/"
 EXPORT_AT = "2026-09-07T11:53:39Z"
@@ -86,34 +89,82 @@ def ref_for(title, path, meta):
  ref=f"{title}, {node} {':'.join(str(n) for n in suffix)}" if node else f"{title} {':'.join(str(n) for n in suffix)}"
  return ref.rstrip()
 
+def prepare_records(title, text, meta=""):
+ """Flatten an export and reject ambiguous generated references."""
+ records = []
+ seen_refs = {}
+ for path, raw in flatten(text):
+  ref=ref_for(title,path,meta)
+  value=clean(raw)
+  if not value:
+   continue
+  previous_path = seen_refs.get(ref)
+  if previous_path is not None and previous_path != path:
+   raise ValueError(
+    f"Reference collision in {title}: {ref!r} "
+    f"maps both {previous_path!r} and {path!r}"
+   )
+  seen_refs[ref] = path
+  records.append((ref, path, value))
+ return records
+
+
 def import_edition(cur, work_id, title, lang, version, license, url):
  print("Downloading",title,lang,version)
- with urllib.request.urlopen(url, timeout=180) as r: data=json.load(r)
+ with urllib.request.urlopen(url, timeout=180) as response:
+  payload = response.read()
+ content_sha256 = hashlib.sha256(payload).hexdigest()
+ data = json.loads(payload)
  text=data.get("text",{})
  if not isinstance(text,dict): raise ValueError(f"Expected cltk-flat dict text for {url}")
+
+ # Store the source hash in edition metadata so rerunning an unchanged import is
+ # safe and cheap, including against the current live schema. Existing databases
+ # without a hash receive one on their next import.
+ cur.execute("""SELECT id, metadata->>'content_sha256' FROM editions
+  WHERE work_id=%s AND language=%s AND version_title=%s""", (work_id,lang,version))
+ existing = cur.fetchone()
+ if existing and existing[1] == content_sha256:
+  cur.execute("SELECT count(*) FROM segments WHERE edition_id=%s", (existing[0],))
+  count = cur.fetchone()[0]
+  cur.execute("""INSERT INTO ingestion_manifest(work_title,language,version_title,source_url,export_generated_at,segment_count)
+   VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(work_title,language,version_title)
+   DO UPDATE SET segment_count=EXCLUDED.segment_count,imported_at=now()""",
+   (title,lang,version,url,EXPORT_AT,count))
+  print("  unchanged; skipped",count,"segments")
+  return count
+
+ records = prepare_records(title, text, data.get("meta", ""))
+
+ metadata = {
+  "export_generated_at": EXPORT_AT,
+  "format": "cltk-flat",
+  "content_sha256": content_sha256,
+  "source_bytes": len(payload),
+ }
  cur.execute("""INSERT INTO editions(work_id,language,version_title,version_source,license,is_source,is_primary,metadata)
-  VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(work_id,language,version_title) DO UPDATE SET version_source=EXCLUDED.version_source,license=EXCLUDED.license RETURNING id""",
-  (work_id,lang,version,url,license,lang=="he",True,Json({"export_generated_at":EXPORT_AT,"format":"cltk-flat"})))
+  VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
+  ON CONFLICT(work_id,language,version_title) DO UPDATE SET
+    version_source=EXCLUDED.version_source, license=EXCLUDED.license,
+    metadata=editions.metadata || EXCLUDED.metadata
+  RETURNING id""",
+  (work_id,lang,version,url,license,lang=="he",True,Json(metadata)))
  edition_id=cur.fetchone()[0]
  cur.execute("DELETE FROM segments WHERE edition_id=%s",(edition_id,))
- count=0
- for path, raw in flatten(text):
-  ref=ref_for(title,path,data.get("meta",""))
-  # Keep the original markup out of search/display while preserving clean text.
-  value=clean(raw)
-  if not value: continue
+ for number, (ref, path, value) in enumerate(records, start=1):
   cur.execute("""INSERT INTO segments(work_id,edition_id,sefaria_ref,section_path,segment_number,text)
-   VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(edition_id,sefaria_ref) DO UPDATE SET text=EXCLUDED.text,section_path=EXCLUDED.section_path""",
-   (work_id,edition_id,ref,list(path),count+1,value))
-  count+=1
+   VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(edition_id,sefaria_ref) DO UPDATE SET
+   text=EXCLUDED.text,section_path=EXCLUDED.section_path,segment_number=EXCLUDED.segment_number""",
+   (work_id,edition_id,ref,list(path),number,value))
+ count = len(records)
  cur.execute("""INSERT INTO ingestion_manifest(work_title,language,version_title,source_url,export_generated_at,segment_count)
   VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(work_title,language,version_title) DO UPDATE SET segment_count=EXCLUDED.segment_count,imported_at=now()""",
   (title,lang,version,url,EXPORT_AT,count))
- print("  ",count,"segments")
+ print("  ",count,"segments; sha256",content_sha256[:12])
  return count
 
 def main():
- ap=argparse.ArgumentParser(); ap.add_argument("--db",default="dbname=midrash user=midrash host=/var/run/postgresql"); ap.add_argument("--work",action="append",choices=list(CORE)); args=ap.parse_args()
+ ap=argparse.ArgumentParser(); ap.add_argument("--db",default=database_url()); ap.add_argument("--work",action="append",choices=list(CORE)); args=ap.parse_args()
  chosen=args.work or list(CORE)
  with psycopg2.connect(args.db) as conn:
   conn.set_client_encoding("UTF8")

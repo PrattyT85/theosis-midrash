@@ -9,6 +9,10 @@ Group=midrash
 WorkingDirectory=/opt/theosis-midrash
 EnvironmentFile=-/etc/theosis-midrash.env
 Environment=MIDRASH_DATABASE_URL=postgresql://midrash@/midrash?host=/var/run/postgresql
+# Restrict the HTTP listener to the host's LAN address; change for the target host.
+Environment=MIDRASH_HOST=192.168.1.130
+Environment=MIDRASH_PORT=8001
+Environment=MIDRASH_MAX_HEBREW_CANDIDATES=50000
 ExecStart=/opt/theosis-midrash/.venv/bin/python /opt/theosis-midrash/scripts/midrash_server.py
 Restart=always
 RestartSec=5

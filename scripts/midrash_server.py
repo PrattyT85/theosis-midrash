@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import os
 import re
+import asyncio
+import html
+import logging
 from typing import Any
 
 import asyncpg
 from mcp.server.fastmcp import FastMCP
 
 DB_URL = os.environ.get("MIDRASH_DATABASE_URL", "postgresql://midrash@/midrash?host=/var/run/postgresql")
+HOST = os.environ.get("MIDRASH_HOST", "0.0.0.0")
+PORT = int(os.environ.get("MIDRASH_PORT", "8001"))
+MAX_HEBREW_CANDIDATES = int(os.environ.get("MIDRASH_MAX_HEBREW_CANDIDATES", "50000"))
+logger = logging.getLogger("midrash-mcp")
 
 mcp = FastMCP(
     "midrash",
@@ -19,28 +26,32 @@ mcp = FastMCP(
         "license, and source URL returned by the tools. Midrash is interpretive "
         "literature; do not present it as the plain biblical text."
     ),
-    host="0.0.0.0",
-    port=8001,
+    host=HOST,
+    port=PORT,
     streamable_http_path="/mcp",
     stateless_http=True,
 )
 
 _pool: asyncpg.Pool | None = None
+_pool_lock = asyncio.Lock()
 
 async def pool() -> asyncpg.Pool:
     global _pool
     if _pool is None:
-        _pool = await asyncpg.create_pool(DB_URL, min_size=1, max_size=8, command_timeout=30)
+        async with _pool_lock:
+            if _pool is None:
+                logger.info("Opening PostgreSQL connection pool")
+                _pool = await asyncpg.create_pool(DB_URL, min_size=1, max_size=8, command_timeout=30)
     return _pool
 
 
 def clean(value: str) -> str:
-    # Remove Sefaria footnote elements and markers while retaining prose.
-    value = re.sub(r'<i class="footnote">.*?</i>', "", value or "", flags=re.IGNORECASE | re.DOTALL)
+    # Decode entities before stripping tags so escaped markup cannot leak into
+    # the rendered MCP result.
+    value = html.unescape(value or "")
+    value = re.sub(r'<i class="footnote">.*?</i>', "", value, flags=re.IGNORECASE | re.DOTALL)
     value = re.sub(r'<sup class="footnote-marker">.*?</sup>', "", value, flags=re.IGNORECASE | re.DOTALL)
     value = re.sub(r"<[^>]+>", "", value)
-    value = value.replace("&nbsp;", " ").replace("&amp;", "&")
-    value = value.replace("&quot;", '"').replace("&#39;", "'")
     return re.sub(r"\s+", " ", value).strip()
 
 
@@ -85,7 +96,13 @@ async def search_hebrew_in_python(p, query: str, work: str | None, category: str
                e.language, e.version_title, e.license, e.version_source AS source_url
         FROM segments s JOIN works w ON w.id=s.work_id JOIN editions e ON e.id=s.edition_id
         WHERE {where}
-    """, *params)
+        LIMIT ${n}
+    """, *params, MAX_HEBREW_CANDIDATES + 1)
+    if len(rows) > MAX_HEBREW_CANDIDATES:
+        raise ValueError(
+            f"Hebrew search is too broad ({MAX_HEBREW_CANDIDATES:,}-row safety limit); "
+            "add a work, category, corpus, or phrase filter."
+        )
     wanted = normalize_hebrew(query)
     scored = []
     for row in rows:
@@ -120,10 +137,22 @@ async def health(request):
     from starlette.responses import JSONResponse
     try:
         p = await pool()
-        count = await p.fetchval("SELECT count(*) FROM segments")
-        return JSONResponse({"status": "ok", "service": "midrash-mcp", "segments": count})
-    except Exception as exc:
-        return JSONResponse({"status": "error", "error": str(exc)}, status_code=503)
+        counts = await p.fetchrow("""
+            SELECT
+              (SELECT count(*) FROM works) AS works,
+              (SELECT count(*) FROM editions) AS editions,
+              (SELECT count(*) FROM segments) AS segments,
+              (SELECT count(*) FROM source_links) AS source_links,
+              (SELECT max(imported_at) FROM ingestion_manifest) AS last_imported_at,
+              (SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname=current_database()) AS encoding
+        """)
+        payload = dict(counts)
+        if payload["last_imported_at"] is not None:
+            payload["last_imported_at"] = payload["last_imported_at"].isoformat()
+        return JSONResponse({"status": "ok", "service": "midrash-mcp", **payload})
+    except Exception:
+        logger.exception("Health check failed")
+        return JSONResponse({"status": "error", "service": "midrash-mcp"}, status_code=503)
 
 @mcp.tool()
 async def list_midrash_works(language: str | None = None) -> str:
@@ -199,7 +228,10 @@ async def search_midrash(query: str, work: str | None = None, category: str | No
     # PostgreSQL on this host is SQL_ASCII. Route Hebrew through a Unicode-aware
     # Python normalizer rather than risking a server-side encoding error.
     if contains_hebrew(raw_query):
-        hebrew_rows = await search_hebrew_in_python(p, raw_query, work, category, corpus, language, phrase, limit)
+        try:
+            hebrew_rows = await search_hebrew_in_python(p, raw_query, work, category, corpus, language, phrase, limit)
+        except ValueError as exc:
+            return str(exc)
         if not hebrew_rows:
             return f"No Hebrew Midrash results found for '{raw_query}'."
         return "## Hebrew-normalized search results\n\n" + "\n\n---\n\n".join(format_result(row) for row in hebrew_rows)

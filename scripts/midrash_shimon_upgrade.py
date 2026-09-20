@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Add the available English Sefaria editions for Mekhilta d'Rabbi Shimon ben Yochai."""
 import psycopg2
+from midrash_config import database_url
 from midrash_import import import_edition
 
 TITLE = "Mekhilta DeRabbi Shimon Ben Yochai"
@@ -10,7 +11,7 @@ ED = [
     ("en", "Rabbi Mike Feuer, Jerusalem Anthology", "Not specified", "https://storage.googleapis.com/sefaria-export/cltk-flat/Midrash/Halakhah/Mekhilta%20DeRabbi%20Shimon%20Ben%20Yochai/English/Rabbi%20Mike%20Feuer%2C%20Jerusalem%20Anthology.json"),
 ]
 
-with psycopg2.connect("dbname=midrash user=midrash host=/var/run/postgresql", options="-c client_encoding=UTF8") as conn:
+with psycopg2.connect(database_url(), options="-c client_encoding=UTF8") as conn:
     conn.set_client_encoding("UTF8")
     with conn.cursor() as cur:
         cur.execute("SELECT id FROM works WHERE sefaria_title=%s", (TITLE,))

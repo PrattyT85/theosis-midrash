@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Import six additional bilingual aggadic Midrash works."""
 import psycopg2
+from midrash_config import database_url
 from midrash_import import import_edition
 
 WORKS = {
@@ -24,7 +25,7 @@ WORKS = {
         ("he", "merged", "Mixed/see metadata", "https://storage.googleapis.com/sefaria-export/cltk-flat/Midrash/Aggadah/Midrash%20Mishlei/Hebrew/merged.json")]),
 }
 
-with psycopg2.connect("dbname=midrash user=midrash host=/var/run/postgresql", options="-c client_encoding=UTF8") as conn:
+with psycopg2.connect(database_url(), options="-c client_encoding=UTF8") as conn:
     conn.set_client_encoding("UTF8")
     with conn.cursor() as cur:
         for title, (hebrew, corpus, editions) in WORKS.items():
