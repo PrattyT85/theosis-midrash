@@ -7,8 +7,8 @@ This is a snapshot of the Midrash deployment on CT125 recorded during repository
 - systemd unit: `midrash.service`
 - endpoint: `192.168.1.130:8001/mcp`
 - service user: `midrash`
-- deployed repository commit: `fe91d3f`
-- schema migration version: `001`
+- deployed repository commit: `6344e7e`
+- schema migration version: `002`
 - database: `midrash` (UTF-8)
 - legacy rollback database: `midrash_sqlascii_legacy`
 - source service file is `/etc/systemd/system/midrash.service`
