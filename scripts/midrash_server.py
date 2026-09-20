@@ -75,8 +75,7 @@ def contains_hebrew(value: str) -> bool:
 async def search_hebrew_in_python(p, query: str, work: str | None, category: str | None,
                                   corpus: str | None, language: str | None,
                                   phrase: bool, limit: int) -> list[dict[str, Any]]:
-    """Search Hebrew in Python because CT125 is SQL_ASCII and cannot safely
-    apply Unicode normalization inside PostgreSQL."""
+    """Use PostgreSQL's trigram index to narrow Hebrew candidates, then score in Python."""
     filters = []
     params: list[Any] = []
     n = 1
@@ -90,27 +89,42 @@ async def search_hebrew_in_python(p, query: str, work: str | None, category: str
         filters.append(f"e.language = ${n}"); params.append(language); n += 1
     else:
         filters.append("e.language = 'he'")
+
+    wanted = normalize_hebrew(query)
+    terms = [normalize_hebrew(term) for term in query.split() if normalize_hebrew(term)]
+    search_terms = [wanted] if phrase else list(dict.fromkeys(terms))
+    if not search_terms:
+        return []
+
+    search_clauses = []
+    for term in search_terms:
+        like_term = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        search_clauses.append(
+            f"public.midrash_normalize_hebrew(s.text) LIKE '%' || ${n} || '%' ESCAPE '\\'"
+        )
+        params.append(like_term)
+        n += 1
+    filters.append("(" + (" AND " if phrase else " OR ").join(search_clauses) + ")")
     where = " AND ".join(filters) or "TRUE"
+    params.append(MAX_HEBREW_CANDIDATES + 1)
     rows = await p.fetch(f"""
         SELECT s.sefaria_ref, s.text, w.sefaria_title AS work_title,
                e.language, e.version_title, e.license, e.version_source AS source_url
         FROM segments s JOIN works w ON w.id=s.work_id JOIN editions e ON e.id=s.edition_id
         WHERE {where}
         LIMIT ${n}
-    """, *params, MAX_HEBREW_CANDIDATES + 1)
+    """, *params)
     if len(rows) > MAX_HEBREW_CANDIDATES:
         raise ValueError(
             f"Hebrew search is too broad ({MAX_HEBREW_CANDIDATES:,}-row safety limit); "
             "add a work, category, corpus, or phrase filter."
         )
-    wanted = normalize_hebrew(query)
     scored = []
     for row in rows:
         text = normalize_hebrew(row["text"])
         if phrase:
             score = text.count(wanted) if wanted else 0
         else:
-            terms = [normalize_hebrew(term) for term in query.split() if term]
             score = sum(text.count(term) for term in terms)
         if score:
             item = dict(row); item["_score"] = score; scored.append(item)

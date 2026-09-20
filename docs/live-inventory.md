@@ -22,7 +22,7 @@ This is a snapshot of the Midrash deployment on CT125 recorded during repository
 | `source_links` | 594,373 |
 | `ingestion_manifest` | 45 |
 
-The live `midrash` database is now UTF-8. The former SQL_ASCII database is retained as `midrash_sqlascii_legacy` for rollback until the migration is fully signed off.
+The live `midrash` database is now UTF-8. It has the `segments_hebrew_search_trgm_idx` expression index for normalized Hebrew search. The former SQL_ASCII database is retained as `midrash_sqlascii_legacy` for rollback until the migration is fully signed off.
 
 ## Source snapshot
 

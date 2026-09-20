@@ -48,6 +48,7 @@ Results identify the exact work, Sefaria reference, edition, language, licence, 
 - `psycopg2-binary`
 - MCP Python SDK
 - Network access to the Sefaria Export bucket for ingestion
+- `pg_trgm` PostgreSQL extension for indexed Hebrew search
 
 The tested dependency set is recorded in `requirements.lock`; development and
 test dependencies are in `requirements-dev.lock`. Use the lock file for a
@@ -62,12 +63,15 @@ Create the database and apply the schema as a PostgreSQL administrator:
 ```bash
 sudo -u postgres psql <<'SQL'
 CREATE ROLE midrash LOGIN;
-CREATE DATABASE midrash OWNER midrash;
+CREATE DATABASE midrash OWNER midrash ENCODING 'UTF8' TEMPLATE template0;
 SQL
 sudo -u postgres psql -d midrash -f schema.sql
+sudo -u postgres psql -d midrash -f migrations/001_hebrew_search_index.sql
 ```
 
-If the role or database already exists, skip the corresponding creation statement.
+The migration creates the `pg_trgm` expression index used to narrow Hebrew
+search candidates before Python scoring. If the role or database already exists,
+skip the corresponding creation statement.
 
 Create an environment and install dependencies:
 

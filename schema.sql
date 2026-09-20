@@ -17,6 +17,8 @@ SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
 
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
 
 SET default_tablespace = '';
 
@@ -309,6 +311,26 @@ ALTER TABLE ONLY public.works
 --
 
 CREATE INDEX segments_search_idx ON public.segments USING gin (search_vector);
+
+
+CREATE OR REPLACE FUNCTION public.midrash_normalize_hebrew(value text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+AS $$
+    SELECT regexp_replace(
+        regexp_replace(
+            translate(coalesce(value, ''), 'ךםןףץ', 'כמנפצ'),
+            '[' || chr(1425) || '-' || chr(1479) || ']', '', 'g'
+        ),
+        '\s+', ' ', 'g'
+    )
+$$;
+
+
+CREATE INDEX segments_hebrew_search_trgm_idx
+    ON public.segments USING gin (public.midrash_normalize_hebrew(text) gin_trgm_ops);
 
 
 --
