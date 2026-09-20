@@ -1,0 +1,22 @@
+[Unit]
+Description=Theosis Midrash MCP Server - Sefaria Jewish Midrash Research
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=midrash
+Group=midrash
+WorkingDirectory=/opt/theosis-midrash
+EnvironmentFile=-/etc/theosis-midrash.env
+Environment=MIDRASH_DATABASE_URL=postgresql://midrash@/midrash?host=/var/run/postgresql
+ExecStart=/opt/theosis-midrash/.venv/bin/python /opt/theosis-midrash/scripts/midrash_server.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/theosis-midrash
+
+[Install]
+WantedBy=multi-user.target

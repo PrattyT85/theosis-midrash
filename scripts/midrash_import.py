@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Download selected Sefaria Export editions and import them into midrash."""
+from __future__ import annotations
+import argparse, html, json, os, re, urllib.request
+from datetime import datetime, timezone
+import psycopg2
+from psycopg2.extras import Json
+
+BASE = "https://storage.googleapis.com/sefaria-export/"
+EXPORT_AT = "2026-09-07T11:53:39Z"
+
+CORE = {
+ "Bereshit Rabbah": {
+   "hebrew_title":"בראשית רבה", "categories":["Midrash","Aggadah","Midrash Rabbah"], "corpus":"aggadic",
+   "editions":[
+    ("en","The Sefaria Midrash Rabbah, 2022","CC-BY","https://storage.googleapis.com/sefaria-export/cltk-flat/Midrash/Aggadah/Midrash%20Rabbah/Bereshit%20Rabbah/English/The%20Sefaria%20Midrash%20Rabbah%2C%202022.json"),
+    ("he","merged","unknown","https://storage.googleapis.com/sefaria-export/cltk-flat/Midrash/Aggadah/Midrash%20Rabbah/Bereshit%20Rabbah/Hebrew/merged.json") ]},
+ "Shemot Rabbah": {"hebrew_title":"שמות רבה","categories":["Midrash","Aggadah","Midrash Rabbah"],"corpus":"aggadic","editions":[]},
+ "Vayikra Rabbah": {"hebrew_title":"ויקרא רבה","categories":["Midrash","Aggadah","Midrash Rabbah"],"corpus":"aggadic","editions":[]},
+ "Bamidbar Rabbah": {"hebrew_title":"במדבר רבה","categories":["Midrash","Aggadah","Midrash Rabbah"],"corpus":"aggadic","editions":[]},
+ "Devarim Rabbah": {"hebrew_title":"דברים רבה","categories":["Midrash","Aggadah","Midrash Rabbah"],"corpus":"aggadic","editions":[]},
+ "Midrash Tanchuma": {"hebrew_title":"מדרש תנחומא","categories":["Midrash","Aggadah"],"corpus":"aggadic","editions":[
+    ("en","Midrash Tanhuma-Yelammedenu, trans. Samuel A. Berman","CC-BY","https://storage.googleapis.com/sefaria-export/cltk-flat/Midrash/Aggadah/Midrash%20Tanchuma/English/Midrash%20Tanhuma-Yelammedenu%2C%20trans.%20Samuel%20A.%20Berman.json"),
+    ("he","merged","unknown","https://storage.googleapis.com/sefaria-export/cltk-flat/Midrash/Aggadah/Midrash%20Tanchuma/Hebrew/merged.json")]},
+ "Pirkei DeRabbi Eliezer": {"hebrew_title":"פרקי דרבי אליעזר","categories":["Midrash","Aggadah"],"corpus":"aggadic","editions":[
+    ("en","Pirke de Rabbi Eliezer, trans. Rabbi Gerald Friedlander, London, 1916","Public Domain","https://storage.googleapis.com/sefaria-export/cltk-flat/Midrash/Aggadah/Pirkei%20DeRabbi%20Eliezer/English/Pirke%20de%20Rabbi%20Eliezer%2C%20trans.%20Rabbi%20Gerald%20Friedlander%2C%20London%2C%201916.json"),
+    ("he","Pirke DeRabbi Eliezer, Sefaria Vocalized Edition","Public Domain","https://storage.googleapis.com/sefaria-export/cltk-flat/Midrash/Aggadah/Pirkei%20DeRabbi%20Eliezer/Hebrew/Pirke%20DeRabbi%20Eliezer%2C%20Sefaria%20Vocalized%20Edition.json")]}
+}
+
+# Fill missing Rabbah editions with stable Sefaria 2022/merged names.
+for title, slug, he in [
+ ("Shemot Rabbah","Shemot%20Rabbah","Shemot%20Rabbah"),("Vayikra Rabbah","Vayikra%20Rabbah","Vayikra%20Rabbah"),
+ ("Bamidbar Rabbah","Bamidbar%20Rabbah","Bamidbar%20Rabbah"),("Devarim Rabbah","Devarim%20Rabbah","Devarim%20Rabbah")]:
+ CORE[title]["editions"] = [
+  ("en","The Sefaria Midrash Rabbah, 2022","CC-BY",f"{BASE}cltk-flat/Midrash/Aggadah/Midrash%20Rabbah/{slug}/English/The%20Sefaria%20Midrash%20Rabbah%2C%202022.json"),
+  ("he","merged","unknown",f"{BASE}cltk-flat/Midrash/Aggadah/Midrash%20Rabbah/{slug}/Hebrew/merged.json")]
+
+def clean(s):
+ s = html.unescape(s or "")
+ s = re.sub(r'<i class="footnote">.*?</i>', "", s, flags=re.IGNORECASE | re.DOTALL)
+ s = re.sub(r'<sup class="footnote-marker">.*?</sup>', "", s, flags=re.IGNORECASE | re.DOTALL)
+ s = re.sub(r"<[^>]+>", "", s)
+ return re.sub(r"\s+", " ", s).strip()
+
+def flatten(obj, prefix=()):
+ if isinstance(obj, dict):
+  for key,val in obj.items():
+   yield from flatten(val, prefix+(str(key),))
+ elif isinstance(obj, list):
+  for i,val in enumerate(obj): yield from flatten(val, prefix+(str(i),))
+ elif isinstance(obj, str) and clean(obj): yield prefix, obj
+
+def ref_for(title, path, meta):
+ # cltk-flat stores a whole path in one key, e.g.
+ # "0_Chapter, 14_Paragraph" or "0_Bereshit, 0_Siman, 0_Paragraph".
+ # Numeric positions are 0-based in export; Sefaria refs are 1-based.
+ components=[]
+ for item in path:
+  components.extend(part.strip() for part in item.split(","))
+ parsed=[]
+ for component in components:
+  m=re.match(r"^(\d+)_(.*)$", component)
+  if m:
+   parsed.append((int(m.group(1))+1, m.group(2).strip()))
+ if not parsed:
+  return title
+ nums=[index for index, _label in parsed]
+ labels=[label for _index, label in parsed]
+ if "Tanchuma" in title:
+  parasha = labels[0] if labels else ""
+  if len(nums) >= 3:
+   return f"{title}, {parasha} {nums[1]}:{nums[2]}"
+  return f"{title}, {parasha}" if parasha else title
+ # Psalm comments use both the Psalm and comment numbers. Dropping the first
+ # number here would collapse hundreds of comments into one row per Psalm.
+ if title == "Midrash Tehillim" and len(nums) >= 2:
+  return f"{title} {nums[0]}:{nums[1]}"
+ # These Rabbah exports have a three-level Parasha/Chapter/Midrash path.
+ # Retain all levels; omitting the parasha index causes collisions.
+ if title in {"Shir HaShirim Rabbah", "Kohelet Rabbah"}:
+  return f"{title} {':'.join(str(n) for n in nums)}"
+ # Preserve the named node for other complex works and retain numeric levels.
+ generic={"", "Chapter", "Paragraph", "Verse", "Section", "Comment", "Ot"}
+ node=next((label for label in labels if label not in generic), "")
+ suffix=nums[1:] if node else nums
+ ref=f"{title}, {node} {':'.join(str(n) for n in suffix)}" if node else f"{title} {':'.join(str(n) for n in suffix)}"
+ return ref.rstrip()
+
+def import_edition(cur, work_id, title, lang, version, license, url):
+ print("Downloading",title,lang,version)
+ with urllib.request.urlopen(url, timeout=180) as r: data=json.load(r)
+ text=data.get("text",{})
+ if not isinstance(text,dict): raise ValueError(f"Expected cltk-flat dict text for {url}")
+ cur.execute("""INSERT INTO editions(work_id,language,version_title,version_source,license,is_source,is_primary,metadata)
+  VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(work_id,language,version_title) DO UPDATE SET version_source=EXCLUDED.version_source,license=EXCLUDED.license RETURNING id""",
+  (work_id,lang,version,url,license,lang=="he",True,Json({"export_generated_at":EXPORT_AT,"format":"cltk-flat"})))
+ edition_id=cur.fetchone()[0]
+ cur.execute("DELETE FROM segments WHERE edition_id=%s",(edition_id,))
+ count=0
+ for path, raw in flatten(text):
+  ref=ref_for(title,path,data.get("meta",""))
+  # Keep the original markup out of search/display while preserving clean text.
+  value=clean(raw)
+  if not value: continue
+  cur.execute("""INSERT INTO segments(work_id,edition_id,sefaria_ref,section_path,segment_number,text)
+   VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(edition_id,sefaria_ref) DO UPDATE SET text=EXCLUDED.text,section_path=EXCLUDED.section_path""",
+   (work_id,edition_id,ref,list(path),count+1,value))
+  count+=1
+ cur.execute("""INSERT INTO ingestion_manifest(work_title,language,version_title,source_url,export_generated_at,segment_count)
+  VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(work_title,language,version_title) DO UPDATE SET segment_count=EXCLUDED.segment_count,imported_at=now()""",
+  (title,lang,version,url,EXPORT_AT,count))
+ print("  ",count,"segments")
+ return count
+
+def main():
+ ap=argparse.ArgumentParser(); ap.add_argument("--db",default="dbname=midrash user=midrash host=/var/run/postgresql"); ap.add_argument("--work",action="append",choices=list(CORE)); args=ap.parse_args()
+ chosen=args.work or list(CORE)
+ with psycopg2.connect(args.db) as conn:
+  conn.set_client_encoding("UTF8")
+  with conn.cursor() as cur:
+   for title in chosen:
+    meta=CORE[title]
+    cur.execute("""INSERT INTO works(sefaria_title,hebrew_title,categories,corpus,source_url)
+     VALUES(%s,%s,%s,%s,%s) ON CONFLICT(sefaria_title) DO UPDATE SET hebrew_title=EXCLUDED.hebrew_title,categories=EXCLUDED.categories RETURNING id""",
+     (title,meta["hebrew_title"],meta["categories"],meta["corpus"],"https://www.sefaria.org/"+title.replace(" ","_")))
+    work_id=cur.fetchone()[0]
+    for ed in meta["editions"]: import_edition(cur,work_id,title,*ed)
+  conn.commit()
+ print("Import complete")
+if __name__=="__main__": main()
