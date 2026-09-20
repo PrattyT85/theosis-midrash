@@ -32,6 +32,7 @@ The server exposes:
 
 - `list_midrash_works`
 - `get_midrash_text`
+- `get_midrash_parallel`
 - `search_midrash`
 - `list_midrash_editions`
 - `get_related_sources`
