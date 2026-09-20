@@ -165,6 +165,18 @@ async def schema_version(p: asyncpg.Pool) -> str:
         return "untracked"
 
 
+def metadata_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
 def compact_json(value: Any, limit: int = 400) -> str:
     if value in (None, "", {}, []):
         return ""
@@ -178,7 +190,7 @@ def format_result(row: dict[str, Any], *, preview: bool = False) -> str:
     truncated = bool(preview and text_length > len(text))
     categories = ", ".join(row.get("categories") or []) or "not recorded"
     section_path = " › ".join(row.get("section_path") or []) or "not recorded"
-    edition_meta = row.get("edition_metadata") or {}
+    edition_meta = metadata_dict(row.get("edition_metadata"))
     provenance = []
     for key in ("licence_status", "export_generated_at", "metadata_source", "upgraded_at", "content_sha256"):
         if edition_meta.get(key):
@@ -440,7 +452,7 @@ async def list_midrash_editions(work: str) -> str:
         return f"No imported work matches '{work}'."
     lines = [f"## Editions matching {work}", ""]
     for row in rows:
-        metadata = row["metadata"] or {}
+        metadata = metadata_dict(row["metadata"])
         status = metadata.get("licence_status") or "not recorded"
         lines.append(
             f"- **{row['sefaria_title']}** — edition {row['edition_id']}; {row['language']}: **{row['version_title']}**; "
@@ -473,7 +485,7 @@ async def get_midrash_metadata(work: str, exact_title: bool = False) -> str:
             f"Sefaria source: {r.get('source_url') or 'not recorded'}",
             f"Discovered: {r.get('discovered_at')}",
         ])
-        work_meta = r.get("metadata") or {}
+        work_meta = metadata_dict(r.get("metadata"))
         useful = {key: work_meta[key] for key in ("era", "composition_date", "publication_date", "authors", "metadata_source") if work_meta.get(key)}
         if useful:
             lines.append("Work metadata: " + compact_json(useful))
@@ -484,7 +496,7 @@ async def get_midrash_metadata(work: str, exact_title: bool = False) -> str:
         lines.append("Editions:")
         for edition in editions:
             e = dict(edition)
-            meta = e.get("metadata") or {}
+            meta = metadata_dict(e.get("metadata"))
             lines.append(
                 f"- edition {e['id']}: {e['language']} / {e['version_title']}; license={e['license'] or 'not specified'}; "
                 f"source={e['version_source'] or 'not recorded'}; source_edition={bool(e['is_source'])}; primary={bool(e['is_primary'])}; "
@@ -519,7 +531,7 @@ async def get_import_history(work: str | None = None, limit: int = 50) -> str:
         return "No ingestion history recorded."
     lines = [f"## Midrash import history ({len(rows)} records)", ""]
     for row in rows:
-        meta = row["metadata"] or {}
+        meta = metadata_dict(row["metadata"])
         lines.append(
             f"- {row['work_title']} / {row['language']} / {row['version_title']} (edition {row['edition_id'] or 'unknown'}): "
             f"{row['segment_count']} segments; export={row['export_generated_at']}; imported={row['imported_at']}; "
@@ -556,7 +568,7 @@ async def get_related_sources(ref: str, link_type: str | None = None,
     for row in rows:
         line = f"- {row['source_ref']} → {row['target_ref']} ({row['link_type'] or 'link'})"
         if detail:
-            metadata = row["metadata"] or {}
+            metadata = metadata_dict(row["metadata"])
             details = []
             for key in ("midrash_work", "source_export", "citation_1", "citation_2", "category_1", "category_2"):
                 if metadata.get(key):
