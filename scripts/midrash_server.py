@@ -272,6 +272,88 @@ async def list_midrash_works(language: str | None = None) -> str:
     return "\n".join(lines)
 
 @mcp.tool()
+async def get_corpus_summary(work: str | None = None, corpus: str | None = None,
+                             language: str | None = None, limit: int = 100) -> str:
+    """Return corpus coverage, edition health, and import-quality signals."""
+    p = await pool()
+    limit = max(1, min(limit, 100))
+    filters = []
+    params: list[Any] = []
+    n = 1
+    if work:
+        filters.append(f"w.sefaria_title ILIKE ${n}"); params.append(f"%{work}%"); n += 1
+    if corpus:
+        filters.append(f"w.corpus = ${n}"); params.append(corpus); n += 1
+    if language:
+        filters.append(f"e.language = ${n}"); params.append(language); n += 1
+    where = " AND ".join(filters) or "TRUE"
+    params.append(limit)
+    per_work = await p.fetch(f"""
+        SELECT w.sefaria_title,w.hebrew_title,w.corpus,w.categories,
+               count(DISTINCT e.id) AS editions,
+               count(DISTINCT s.id) AS segments,
+               array_agg(DISTINCT e.language ORDER BY e.language) FILTER (WHERE e.id IS NOT NULL) AS languages,
+               count(DISTINCT e.id) FILTER (WHERE e.is_source) AS source_editions,
+               count(DISTINCT e.id) FILTER (WHERE e.is_primary) AS primary_editions,
+               max(m.imported_at) AS last_imported_at
+        FROM works w
+        LEFT JOIN editions e ON e.work_id=w.id
+        LEFT JOIN segments s ON s.edition_id=e.id
+        LEFT JOIN ingestion_manifest m ON m.edition_id=e.id
+        WHERE {where}
+        GROUP BY w.id
+        ORDER BY w.sefaria_title
+        LIMIT ${n}
+    """, *params)
+    if not per_work:
+        return "No corpus entries match the requested filters."
+
+    language_rows = await p.fetch(f"""
+        SELECT e.language,count(DISTINCT e.id) AS editions,count(DISTINCT s.id) AS segments
+        FROM works w JOIN editions e ON e.work_id=w.id
+        LEFT JOIN segments s ON s.edition_id=e.id
+        WHERE {where}
+        GROUP BY e.language ORDER BY e.language
+    """, *params[:-1])
+    quality = await p.fetchrow(f"""
+        SELECT
+          (SELECT count(*) FROM editions WHERE metadata->>'content_sha256' IS NULL) AS editions_missing_sha256,
+          (SELECT count(*) FROM editions e WHERE NOT EXISTS (SELECT 1 FROM segments s WHERE s.edition_id=e.id)) AS empty_editions,
+          (SELECT count(*) FROM ingestion_manifest m WHERE NOT EXISTS (SELECT 1 FROM editions e WHERE e.id=m.edition_id)) AS manifest_without_edition,
+          (SELECT count(*) FROM ingestion_manifest m WHERE m.segment_count != (SELECT count(*) FROM segments s WHERE s.edition_id=m.edition_id)) AS manifest_mismatches
+    """)
+    total_editions = sum(int(row["editions"]) for row in per_work)
+    total_segments = sum(int(row["segments"]) for row in per_work)
+    lines = [
+        f"## Midrash corpus summary (schema {await schema_version(p)})",
+        f"Works returned: {len(per_work)} | Editions: {total_editions} | Segments: {total_segments}",
+        "",
+        "### Per-work coverage",
+    ]
+    for row in per_work:
+        lines.append(
+            f"- **{row['sefaria_title']}** ({row['corpus'] or 'uncategorized'}): "
+            f"{row['editions']} editions, {row['segments']} segments; "
+            f"languages={', '.join(row['languages'] or []) or 'none'}; "
+            f"source_editions={row['source_editions']}; primary_editions={row['primary_editions']}; "
+            f"last_import={row['last_imported_at'] or 'not recorded'}"
+        )
+    lines.append("\n### Language breakdown")
+    lines.extend(f"- {row['language']}: {row['editions']} editions, {row['segments']} segments" for row in language_rows)
+    lines.extend([
+        "\n### Quality signals",
+        f"- Editions missing content hash: {quality['editions_missing_sha256']}",
+        f"- Empty editions: {quality['empty_editions']}",
+        f"- Manifest rows without edition: {quality['manifest_without_edition']}",
+        f"- Manifest segment-count mismatches: {quality['manifest_mismatches']}",
+    ])
+    if int(quality['editions_missing_sha256']) or int(quality['empty_editions']) or int(quality['manifest_without_edition']) or int(quality['manifest_mismatches']):
+        lines.append("Warning: one or more corpus quality signals require review.")
+    else:
+        lines.append("Quality status: no missing editions, manifest links, or segment-count mismatches detected.")
+    return "\n".join(lines)
+
+@mcp.tool()
 async def search_midrash(query: str, work: str | None = None, category: str | None = None,
                          corpus: str | None = None, language: str | None = None,
                          phrase: bool = False, limit: int = 10) -> str:

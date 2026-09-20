@@ -76,12 +76,14 @@ ALTER SEQUENCE public.editions_id_seq OWNED BY public.editions.id;
 
 CREATE TABLE public.ingestion_manifest (
     id bigint NOT NULL,
+    edition_id bigint NOT NULL,
     work_title text NOT NULL,
     language text NOT NULL,
     version_title text NOT NULL,
     source_url text NOT NULL,
     export_generated_at timestamp with time zone,
     segment_count integer DEFAULT 0 NOT NULL,
+    content_sha256 text,
     imported_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
@@ -364,12 +366,26 @@ CREATE UNIQUE INDEX source_links_dedupe_idx ON public.source_links USING btree (
 CREATE INDEX source_links_lookup_idx ON public.source_links USING btree (source_ref, target_ref);
 
 
+CREATE INDEX ingestion_manifest_edition_idx ON public.ingestion_manifest USING btree (edition_id, imported_at DESC);
+
+
+CREATE UNIQUE INDEX editions_one_primary_per_work_idx ON public.editions USING btree (work_id) WHERE is_primary;
+
+
 --
 -- Name: editions editions_work_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.editions
     ADD CONSTRAINT editions_work_id_fkey FOREIGN KEY (work_id) REFERENCES public.works(id) ON DELETE CASCADE;
+
+
+--
+-- Name: ingestion_manifest ingestion_manifest_edition_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ingestion_manifest
+    ADD CONSTRAINT ingestion_manifest_edition_id_fkey FOREIGN KEY (edition_id) REFERENCES public.editions(id) ON DELETE CASCADE;
 
 
 --

@@ -38,6 +38,7 @@ The server exposes:
 - `get_related_sources`
 - `get_midrash_metadata`
 - `get_import_history`
+- `get_corpus_summary`
 
 Results identify the exact work, Sefaria reference, edition, language, licence, source URL, edition flags, import snapshot, and schema version where available.
 
@@ -98,6 +99,8 @@ python scripts/migrate.py
 The runner applies migrations in numeric order, records SHA-256 checksums, and
 fails if an already-applied migration file is changed. The existing indexed
 search migration is safe to record retroactively because its SQL is idempotent.
+Migration 002 links ingestion records directly to editions, backfills historical
+content hashes where available, and enforces one primary edition per work.
 
 Import the initial bilingual corpus:
 

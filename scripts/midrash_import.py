@@ -109,6 +109,27 @@ def prepare_records(title, text, meta=""):
  return records
 
 
+def refresh_primary_edition(cur, work_id):
+ """Keep exactly one canonical edition per work, preferring English coverage."""
+ cur.execute("""
+  WITH ranked AS (
+   SELECT id, row_number() OVER (
+    ORDER BY
+     CASE
+      WHEN language='en' AND version_title ILIKE '%%Sefaria Community Translation%%' THEN 0
+      WHEN language='en' THEN 1
+      WHEN is_source THEN 2
+      ELSE 3
+     END,
+     version_title, id
+   ) AS rank
+   FROM editions WHERE work_id=%s
+  )
+  UPDATE editions e SET is_primary=(ranked.rank=1)
+  FROM ranked WHERE ranked.id=e.id
+ """, (work_id,))
+
+
 def import_edition(cur, work_id, title, lang, version, license, url):
  print("Downloading",title,lang,version)
  with urllib.request.urlopen(url, timeout=180) as response:
@@ -127,10 +148,11 @@ def import_edition(cur, work_id, title, lang, version, license, url):
  if existing and existing[1] == content_sha256:
   cur.execute("SELECT count(*) FROM segments WHERE edition_id=%s", (existing[0],))
   count = cur.fetchone()[0]
-  cur.execute("""INSERT INTO ingestion_manifest(work_title,language,version_title,source_url,export_generated_at,segment_count)
-   VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(work_title,language,version_title)
-   DO UPDATE SET segment_count=EXCLUDED.segment_count,imported_at=now()""",
-   (title,lang,version,url,EXPORT_AT,count))
+  refresh_primary_edition(cur, work_id)
+  cur.execute("""INSERT INTO ingestion_manifest(edition_id,work_title,language,version_title,source_url,export_generated_at,segment_count,content_sha256)
+   VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(work_title,language,version_title)
+   DO UPDATE SET edition_id=EXCLUDED.edition_id,segment_count=EXCLUDED.segment_count,content_sha256=EXCLUDED.content_sha256,imported_at=now()""",
+   (existing[0],title,lang,version,url,EXPORT_AT,count,content_sha256))
   print("  unchanged; skipped",count,"segments")
   return count
 
@@ -148,8 +170,9 @@ def import_edition(cur, work_id, title, lang, version, license, url):
     version_source=EXCLUDED.version_source, license=EXCLUDED.license,
     metadata=editions.metadata || EXCLUDED.metadata
   RETURNING id""",
-  (work_id,lang,version,url,license,lang=="he",True,Json(metadata)))
+  (work_id,lang,version,url,license,lang=="he",False,Json(metadata)))
  edition_id=cur.fetchone()[0]
+ refresh_primary_edition(cur, work_id)
  cur.execute("DELETE FROM segments WHERE edition_id=%s",(edition_id,))
  for number, (ref, path, value) in enumerate(records, start=1):
   cur.execute("""INSERT INTO segments(work_id,edition_id,sefaria_ref,section_path,segment_number,text)
@@ -157,9 +180,10 @@ def import_edition(cur, work_id, title, lang, version, license, url):
    text=EXCLUDED.text,section_path=EXCLUDED.section_path,segment_number=EXCLUDED.segment_number""",
    (work_id,edition_id,ref,list(path),number,value))
  count = len(records)
- cur.execute("""INSERT INTO ingestion_manifest(work_title,language,version_title,source_url,export_generated_at,segment_count)
-  VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(work_title,language,version_title) DO UPDATE SET segment_count=EXCLUDED.segment_count,imported_at=now()""",
-  (title,lang,version,url,EXPORT_AT,count))
+ cur.execute("""INSERT INTO ingestion_manifest(edition_id,work_title,language,version_title,source_url,export_generated_at,segment_count,content_sha256)
+  VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(work_title,language,version_title) DO UPDATE SET
+  edition_id=EXCLUDED.edition_id,segment_count=EXCLUDED.segment_count,content_sha256=EXCLUDED.content_sha256,imported_at=now()""",
+  (edition_id,title,lang,version,url,EXPORT_AT,count,content_sha256))
  print("  ",count,"segments; sha256",content_sha256[:12])
  return count
 

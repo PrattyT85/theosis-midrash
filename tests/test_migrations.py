@@ -7,9 +7,10 @@ from migrate import discover_migrations  # noqa: E402
 
 def test_migrations_are_ordered_and_have_stable_checksums():
     migrations = discover_migrations(Path(__file__).parents[1] / "migrations")
-    assert [migration.version for migration in migrations] == ["001"]
-    assert len(migrations[0].checksum) == 64
+    assert [migration.version for migration in migrations] == ["001", "002"]
+    assert all(len(migration.checksum) == 64 for migration in migrations)
     assert migrations[0].name == "hebrew_search_index"
+    assert migrations[1].name == "ingestion_provenance_primary"
 
 
 def test_migration_sql_is_not_empty():
