@@ -22,7 +22,7 @@ The live deployment currently contains:
 - 21 works
 - 45 editions
 - 29,367 segments
-- 458,969 source links
+- 594,373 source links
 
 These values are an operational snapshot and will change as the corpus is expanded.
 
