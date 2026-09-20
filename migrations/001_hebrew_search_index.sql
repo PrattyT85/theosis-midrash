@@ -3,20 +3,28 @@
 
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
-CREATE OR REPLACE FUNCTION public.midrash_normalize_hebrew(value text)
-RETURNS text
-LANGUAGE sql
-IMMUTABLE
-PARALLEL SAFE
-AS $$
-    SELECT regexp_replace(
-        regexp_replace(
-            translate(coalesce(value, ''), 'ךםןףץ', 'כמנפצ'),
-            '[' || chr(1425) || '-' || chr(1479) || ']', '', 'g'
-        ),
-        '\s+', ' ', 'g'
-    )
-$$;
+DO $migration$
+BEGIN
+    IF to_regprocedure('public.midrash_normalize_hebrew(text)') IS NULL THEN
+        EXECUTE $function$
+            CREATE FUNCTION public.midrash_normalize_hebrew(value text)
+            RETURNS text
+            LANGUAGE sql
+            IMMUTABLE
+            PARALLEL SAFE
+            AS $body$
+                SELECT regexp_replace(
+                    regexp_replace(
+                        translate(coalesce(value, ''), 'ךםןףץ', 'כמנפצ'),
+                        '[' || chr(1425) || '-' || chr(1479) || ']', '', 'g'
+                    ),
+                    '\\s+', ' ', 'g'
+                )
+            $body$
+        $function$;
+    END IF;
+END
+$migration$;
 
 CREATE INDEX IF NOT EXISTS segments_hebrew_search_trgm_idx
 ON public.segments
