@@ -1,66 +1,62 @@
 # Theosis Midrash MCP
 
-A separate MCP server and PostgreSQL corpus for Jewish Midrash, built alongside the Theosis Bible research system.
+A separate PostgreSQL corpus and MCP server for Jewish Midrash, built alongside the [Theosis Bible research system](https://github.com/PrattyT85/theosis-mcp).
 
-This repository contains the **code, schema, and repeatable import pipeline**. It does not contain Sefaria's exported corpus or a database dump of the text. The importer downloads the selected editions from Sefaria's structured export when run.
+Theosis Midrash is **not the Bible database** and does not replace Theosis. It provides Jewish interpretive and rabbinic context with edition-level provenance, Hebrew/English coverage, Sefaria references, licences, source links, and import hashes.
 
-## Current deployment
+## Related repositories
 
-The live instance runs separately from Theosis:
+- [theosis-mcp](https://github.com/PrattyT85/theosis-mcp) — Bible texts, translations, Christian commentaries, lexicons, and theological research; MCP port 8000.
+- **theosis-midrash** — this repository; Midrash corpus and MCP port 8001.
+- [theosis-sefaria-context](https://github.com/PrattyT85/theosis-sefaria-context) — Targumim, Mishnah, Jewish commentary, Second Temple context, and on-demand Sefaria cache; MCP port 8002.
 
-- PostgreSQL database: `midrash`
-- MCP endpoint: `http://<host>:8001/mcp`
-- Theosis remains on port `8000`
-- Open WebUI can connect to both MCP endpoints independently
+## Current live deployment
 
-The service preserves work, edition, language, Sefaria reference, licence, source URL, and ingestion metadata rather than flattening all text into one table.
+- Database: PostgreSQL `midrash` on CT125
+- Endpoint: `http://192.168.1.130:8001/mcp`
+- Health: `http://192.168.1.130:8001/health`
+- Service: `midrash.service`
+- Service account: `midrash`
+- Encoding: UTF-8
+- Schema migration: `002`
+- Live corpus snapshot: 21 works, 45 editions, 29,367 segments, 594,373 source links
 
-## Current corpus snapshot
+Counts are operational snapshots; use `get_corpus_summary` or `/health` for current values.
 
-The live deployment currently contains:
+## What is included
 
-- 21 works
-- 45 editions
-- 29,367 segments
-- 594,373 source links
+The local corpus contains selected aggadic and halakhic Midrash, including Midrash Rabbah, Midrash Tanchuma, Pirkei DeRabbi Eliezer, Mekhilta, Sifra, Sifrei, Pesikta, Midrash Tehillim, and Midrash Mishlei. The database preserves work, edition, language, exact Sefaria reference, section path, licence, source URL, import timestamp, and content hash where available.
 
-These values are an operational snapshot and will change as the corpus is expanded.
+The live schema also includes roughly 594,000 imported Sefaria source links. The original SQL_ASCII database is retained separately as `midrash_sqlascii_legacy` for rollback; it is not the active service database.
 
 ## MCP tools
 
-The server exposes:
+| Tool | Purpose | Main inputs |
+|---|---|---|
+| `list_midrash_works` | List imported works and edition/language coverage. | `language` |
+| `search_midrash` | Search exact refs, English full text, or normalized Hebrew. | `query`, `work`, `category`, `corpus`, `language`, `phrase`, `limit` |
+| `get_midrash_text` | Retrieve one complete passage. | `ref`, `language`, optional `edition` |
+| `get_midrash_parallel` | Retrieve English and Hebrew editions side by side. | `ref`, optional edition names |
+| `list_midrash_editions` | Show edition, licence, source, primary/source flags, and segment counts. | `work` |
+| `get_midrash_metadata` | Show work metadata and all edition provenance. | `work`, `exact_title` |
+| `get_related_sources` | Show Sefaria links and imported citation/source metadata. | `ref`, `link_type`, `offset`, `limit`, `detail` |
+| `get_import_history` | Show ingestion batches, source URLs, counts, timestamps, and hashes. | optional `work`, `limit` |
+| `get_corpus_summary` | Show work/language coverage and data-quality signals. | optional `work`, `corpus`, `language`, `limit` |
 
-- `list_midrash_works`
-- `get_midrash_text`
-- `get_midrash_parallel`
-- `search_midrash`
-- `list_midrash_editions`
-- `get_related_sources`
-- `get_midrash_metadata`
-- `get_import_history`
-- `get_corpus_summary`
-
-Results identify the exact work, Sefaria reference, edition, language, licence, source URL, edition flags, import snapshot, and schema version where available.
+Results identify the source tradition. Midrash is interpretive literature and must not be presented as plain biblical text.
 
 ## Requirements
 
-- PostgreSQL 16 or newer
-- Python 3.11 or newer
-- `asyncpg`
-- `psycopg2-binary`
-- MCP Python SDK
-- Network access to the Sefaria Export bucket for ingestion
-- `pg_trgm` PostgreSQL extension for indexed Hebrew search
+- PostgreSQL 16+
+- UTF-8 database
+- Python 3.11+
+- `asyncpg`, `psycopg2-binary`, MCP Python SDK
+- `pg_trgm` PostgreSQL extension
+- Network access to Sefaria export data for ingestion
 
-The tested dependency set is recorded in `requirements.lock`; development and
-test dependencies are in `requirements-dev.lock`. Use the lock file for a
-reproducible deployment rather than installing unbounded latest releases.
+Use `requirements.lock` for deployment and `requirements-dev.lock` for development/testing.
 
-A UTF-8 database is required for new installations. The live database uses UTF-8; the former SQL_ASCII database is retained only as a rollback copy. The importer still detects SQL_ASCII for compatibility with older deployments.
-
-## Installation
-
-Create the database and apply the schema as a PostgreSQL administrator:
+## Fresh installation
 
 ```bash
 sudo -u postgres psql <<'SQL'
@@ -68,56 +64,23 @@ CREATE ROLE midrash LOGIN;
 CREATE DATABASE midrash OWNER midrash ENCODING 'UTF8' TEMPLATE template0;
 SQL
 sudo -u postgres psql -d midrash -f schema.sql
-sudo -u postgres psql -d midrash -f migrations/001_hebrew_search_index.sql
-```
 
-The migration creates the `pg_trgm` expression index used to narrow Hebrew
-search candidates before Python scoring. If the role or database already exists,
-skip the corresponding creation statement.
-
-Create an environment and install dependencies:
-
-```bash
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install --upgrade pip
 python -m pip install -r requirements.lock
 export MIDRASH_DATABASE_URL='postgresql://midrash@/midrash?host=/var/run/postgresql'
+
+# Apply and record numbered migrations as the PostgreSQL administrator.
+sudo -u postgres env MIDRASH_DATABASE_URL=postgresql:///midrash?host=/var/run/postgresql python scripts/migrate.py --status
+sudo -u postgres env MIDRASH_DATABASE_URL=postgresql:///midrash?host=/var/run/postgresql python scripts/migrate.py
 ```
 
-All import and upgrade scripts honour `MIDRASH_DATABASE_URL`. A `--db` option
-is also available on the main importer and takes precedence over the
-environment.
+## Import workflow
 
-Track and apply future migrations with:
-
-```bash
-python scripts/migrate.py --status
-python scripts/migrate.py
-```
-
-The runner applies migrations in numeric order, records SHA-256 checksums, and
-fails if an already-applied migration file is changed. The existing indexed
-search migration is safe to record retroactively because its SQL is idempotent.
-Migration 002 links ingestion records directly to editions and enforces one
-primary edition per work. Backfill hashes for historical imports without
-reloading segments with:
-
-```bash
-python scripts/backfill_content_hashes.py
-```
-
-New imports record hashes and their exact export URL automatically.
-
-Import the initial bilingual corpus:
+The importer downloads only the approved edition manifest, hashes the raw payload, validates generated references before replacing segments, and records direct `edition_id` plus source hash in `ingestion_manifest`.
 
 ```bash
 python scripts/midrash_import.py
-```
-
-Then expand and enrich it in bounded stages:
-
-```bash
 python scripts/midrash_expand.py
 python scripts/midrash_megillot_expand.py
 python scripts/midrash_shimon_upgrade.py
@@ -126,49 +89,49 @@ python scripts/midrash_links_import.py
 python scripts/midrash_fix_refs.py
 ```
 
-The later scripts are repeatable upgrades, but review their source and the Sefaria export metadata before running them against an existing database.
-Imports now store a SHA-256 source hash in edition metadata and skip an
-unchanged edition. They also stop on generated-reference collisions instead of
-silently overwriting a segment. A changed edition is still rebuilt inside the
-surrounding transaction, so take a database backup before bulk upgrades.
+All import/upgrade scripts honour `MIDRASH_DATABASE_URL`. The main importer also accepts `--db`.
 
-Start the MCP server:
+The expansion scripts are intentionally bounded and should be run only after reviewing their edition/licence definitions. Take a PostgreSQL backup before bulk changes.
+
+## Deployment
+
+Use [deploy/midrash.service](deploy/midrash.service) as the systemd template. It runs as the dedicated `midrash` user, uses systemd sandboxing, and binds to the configured LAN address. The MCP endpoint has no application authentication; for a different network threat model, add a firewall or authenticated reverse proxy.
 
 ```bash
-export MIDRASH_DATABASE_URL='postgresql://midrash@/midrash?host=/var/run/postgresql'
-python scripts/midrash_server.py
+sudo cp deploy/midrash.service /etc/systemd/system/midrash.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now midrash.service
+curl http://127.0.0.1:8001/health
 ```
 
-For a systemd deployment, use `deploy/midrash.service` as a template. Change
-the paths, service account, database URL, and `MIDRASH_HOST` for the target
-host. The template binds the HTTP service to `192.168.1.130` rather than all
-interfaces; do not expose the database directly to the network. The MCP
-endpoint does not provide user authentication, so restrict port 8001 with a
-host firewall or place it behind an authenticated reverse proxy before using
-it outside a trusted LAN.
+## Client integration
 
-## Open WebUI
-
-Add a second MCP Streamable HTTP connection:
+For Hermes Desktop, enable the `theosis_midrash` server in the dedicated `theosis_ai` profile. For another MCP client, add the Streamable HTTP endpoint:
 
 ```text
 http://<host>:8001/mcp
 ```
 
-Keep the original Theosis connection on port `8000`. The Midrash service is a separate research corpus and should not be mixed into Theosis' `extra_biblical_texts` table.
+Theosis Midrash remains separate from the Theosis endpoint on port 8000 and the Sefaria Context endpoint on port 8002.
 
-## Data and licensing
+## Schema and migration design
 
-Bulk ingestion uses Sefaria's structured Export/GCS corpus. The repository records the edition title, source URL, language, and licence metadata where available. Do not redistribute downloaded editions without checking the licence for that specific edition. A merged edition may contain multiple source licences and is recorded as `Mixed/see metadata` where appropriate.
+- [schema.sql](schema.sql) — UTF-8 baseline schema.
+- [migrations/](migrations/) — numbered, checksum-tracked migrations.
+- [scripts/migrate.py](scripts/migrate.py) — ordered migration runner with advisory locking.
+- [docs/live-inventory.md](docs/live-inventory.md) — point-in-time live deployment snapshot.
 
-## Security notes
+The baseline includes the normalized Hebrew search function and trigram index. Running migration 001 afterward is idempotent and records the migration state; migration 002 adds direct ingestion provenance and enforces one primary edition per work.
 
-The repository service runs under a dedicated Unix account, uses systemd
-sandboxing, and binds to a configurable address. The live database uses UTF-8;
-the former SQL_ASCII database is retained as `midrash_sqlascii_legacy` for
-rollback. Do not change a PostgreSQL database's encoding in place: migrate with
-a backup and `pg_dump`/`pg_restore` into a new UTF-8 database.
+## Licensing and data policy
 
-## Source design
+Sefaria licences apply to individual editions and languages. The repository contains code, schema, and import definitions—not a database dump or bundled downloaded corpus. Check every edition’s licence before redistribution. Merged editions may contain mixed licences and are labelled accordingly.
 
-See `schema.sql` and `docs/live-inventory.md`. The design notes preserve edition identity, exact Sefaria references, bilingual coverage, and related-source provenance.
+## Development and verification
+
+```bash
+.venv/bin/pytest -q
+.venv/bin/python -m compileall -q scripts tests
+```
+
+GitHub Actions runs the tests and compile check on Python 3.11 and 3.13.

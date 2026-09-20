@@ -1,6 +1,6 @@
 # Live Midrash inventory
 
-This is a snapshot of the Midrash deployment on CT125 recorded during repository separation. It is not a substitute for querying the live database.
+This is a point-in-time snapshot of the Midrash deployment on CT125, recorded 2026-09-20. It is not a substitute for querying the live database.
 
 ## Service
 
