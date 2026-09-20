@@ -99,8 +99,15 @@ python scripts/migrate.py
 The runner applies migrations in numeric order, records SHA-256 checksums, and
 fails if an already-applied migration file is changed. The existing indexed
 search migration is safe to record retroactively because its SQL is idempotent.
-Migration 002 links ingestion records directly to editions, backfills historical
-content hashes where available, and enforces one primary edition per work.
+Migration 002 links ingestion records directly to editions and enforces one
+primary edition per work. Backfill hashes for historical imports without
+reloading segments with:
+
+```bash
+python scripts/backfill_content_hashes.py
+```
+
+New imports record hashes and their exact export URL automatically.
 
 Import the initial bilingual corpus:
 

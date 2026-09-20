@@ -163,6 +163,7 @@ def import_edition(cur, work_id, title, lang, version, license, url):
   "format": "cltk-flat",
   "content_sha256": content_sha256,
   "source_bytes": len(payload),
+  "source_export_url": url,
  }
  cur.execute("""INSERT INTO editions(work_id,language,version_title,version_source,license,is_source,is_primary,metadata)
   VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
