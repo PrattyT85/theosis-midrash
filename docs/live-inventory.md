@@ -7,9 +7,10 @@ This is a snapshot of the Midrash deployment on CT125 recorded during repository
 - systemd unit: `midrash.service`
 - endpoint: `192.168.1.130:8001/mcp`
 - service user: `midrash`
-- deployed repository commit: `e8de97c`
-- database: `midrash`
-- source service file was `/etc/systemd/system/midrash.service`
+- deployed repository commit: `5f00d60`
+- database: `midrash` (UTF-8)
+- legacy rollback database: `midrash_sqlascii_legacy`
+- source service file is `/etc/systemd/system/midrash.service`
 
 ## Database counts
 
@@ -18,10 +19,10 @@ This is a snapshot of the Midrash deployment on CT125 recorded during repository
 | `works` | 21 |
 | `editions` | 45 |
 | `segments` | 29,367 |
-| `source_links` | 458,969 |
+| `source_links` | 594,373 |
 | `ingestion_manifest` | 45 |
 
-The live database was approximately 391 MB and used `SQL_ASCII`; new deployments should use UTF-8 where possible.
+The live `midrash` database is now UTF-8. The former SQL_ASCII database is retained as `midrash_sqlascii_legacy` for rollback until the migration is fully signed off.
 
 ## Source snapshot
 

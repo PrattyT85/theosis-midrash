@@ -53,7 +53,7 @@ The tested dependency set is recorded in `requirements.lock`; development and
 test dependencies are in `requirements-dev.lock`. Use the lock file for a
 reproducible deployment rather than installing unbounded latest releases.
 
-A UTF-8 database is recommended for a new installation. The original live database uses `SQL_ASCII` and the importer explicitly controls client encoding and Hebrew search normalization for that deployment.
+A UTF-8 database is required for new installations. The live database uses UTF-8; the former SQL_ASCII database is retained only as a rollback copy. The importer still detects SQL_ASCII for compatibility with older deployments.
 
 ## Installation
 
@@ -138,11 +138,10 @@ Bulk ingestion uses Sefaria's structured Export/GCS corpus. The repository recor
 ## Security notes
 
 The repository service runs under a dedicated Unix account, uses systemd
-sandboxing, and binds to a configurable address. The live database created
-before repository separation uses `SQL_ASCII`; that deployment currently skips
-non-ASCII source links. New installations should use UTF-8. Migrating the live
-database requires a backup and a `pg_dump`/`pg_restore` migration; do not change
-the encoding in place.
+sandboxing, and binds to a configurable address. The live database uses UTF-8;
+the former SQL_ASCII database is retained as `midrash_sqlascii_legacy` for
+rollback. Do not change a PostgreSQL database's encoding in place: migrate with
+a backup and `pg_dump`/`pg_restore` into a new UTF-8 database.
 
 ## Source design
 
