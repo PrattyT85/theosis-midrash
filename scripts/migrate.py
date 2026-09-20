@@ -98,6 +98,7 @@ def apply_migrations(db_url: str, *, status_only: bool = False, dry_run: bool = 
                 ]
             if dry_run:
                 return [f"would apply {migration.version} {migration.name}" for migration in pending]
+            conn.commit()
 
         applied_now = []
         for migration in pending:
