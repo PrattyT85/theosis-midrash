@@ -6,6 +6,7 @@ import os
 import re
 import asyncio
 import html
+import json
 import logging
 from typing import Any
 
@@ -17,6 +18,26 @@ HOST = os.environ.get("MIDRASH_HOST", "0.0.0.0")
 PORT = int(os.environ.get("MIDRASH_PORT", "8001"))
 MAX_HEBREW_CANDIDATES = int(os.environ.get("MIDRASH_MAX_HEBREW_CANDIDATES", "50000"))
 logger = logging.getLogger("midrash-mcp")
+
+PREVIEW_COLUMNS = """
+    s.sefaria_ref, left(s.text, 900) AS text, length(s.text) AS text_length,
+    s.section_path, s.segment_number,
+    w.sefaria_title AS work_title, w.hebrew_title, w.corpus, w.categories,
+    w.source_url AS work_source_url, w.discovered_at,
+    e.id AS edition_id, e.language, e.version_title, e.license,
+    e.version_source AS source_url, e.is_source, e.is_primary,
+    e.metadata AS edition_metadata
+"""
+
+FULL_COLUMNS = """
+    s.sefaria_ref, s.text, length(s.text) AS text_length,
+    s.section_path, s.segment_number,
+    w.sefaria_title AS work_title, w.hebrew_title, w.corpus, w.categories,
+    w.source_url AS work_source_url, w.discovered_at,
+    e.id AS edition_id, e.language, e.version_title, e.license,
+    e.version_source AS source_url, e.is_source, e.is_primary,
+    e.metadata AS edition_metadata
+"""
 
 mcp = FastMCP(
     "midrash",
@@ -108,8 +129,7 @@ async def search_hebrew_in_python(p, query: str, work: str | None, category: str
     where = " AND ".join(filters) or "TRUE"
     params.append(MAX_HEBREW_CANDIDATES + 1)
     rows = await p.fetch(f"""
-        SELECT s.sefaria_ref, s.text, w.sefaria_title AS work_title,
-               e.language, e.version_title, e.license, e.version_source AS source_url
+        SELECT {PREVIEW_COLUMNS}
         FROM segments s JOIN works w ON w.id=s.work_id JOIN editions e ON e.id=s.edition_id
         WHERE {where}
         LIMIT ${n}
@@ -137,14 +157,53 @@ def row_dict(row: asyncpg.Record | None) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-def format_result(row: dict[str, Any]) -> str:
-    return (
-        f"**{row['sefaria_ref']}** — {row['work_title']}\n"
-        f"Language: {row['language']} | Edition: {row['version_title']}\n"
-        f"License: {row.get('license') or 'Not specified'}\n"
-        f"Source: {row.get('source_url') or 'https://www.sefaria.org/'}\n\n"
-        f"{row['text']}"
-    )
+async def schema_version(p: asyncpg.Pool) -> str:
+    try:
+        value = await p.fetchval("SELECT max(version) FROM schema_migrations")
+        return value or "untracked"
+    except asyncpg.UndefinedTableError:
+        return "untracked"
+
+
+def compact_json(value: Any, limit: int = 400) -> str:
+    if value in (None, "", {}, []):
+        return ""
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def format_result(row: dict[str, Any], *, preview: bool = False) -> str:
+    text = row.get("text") or ""
+    text_length = row.get("text_length") or len(text)
+    truncated = bool(preview and text_length > len(text))
+    categories = ", ".join(row.get("categories") or []) or "not recorded"
+    section_path = " › ".join(row.get("section_path") or []) or "not recorded"
+    edition_meta = row.get("edition_metadata") or {}
+    provenance = []
+    for key in ("licence_status", "export_generated_at", "metadata_source", "upgraded_at", "content_sha256"):
+        if edition_meta.get(key):
+            value = edition_meta[key]
+            if key == "content_sha256":
+                value = str(value)[:16] + "…"
+            provenance.append(f"{key}={value}")
+    lines = [
+        f"**{row['sefaria_ref']}** — {row['work_title']}",
+        f"Corpus: {row.get('corpus') or 'not recorded'} | Categories: {categories}",
+        f"Language: {row['language']} | Edition: {row['version_title']} (edition id {row.get('edition_id')})",
+        f"Edition flags: source={bool(row.get('is_source'))}; primary={bool(row.get('is_primary'))}",
+        f"License: {row.get('license') or 'Not specified'}",
+        f"Edition source: {row.get('source_url') or 'not recorded'}",
+        f"Work source: {row.get('work_source_url') or 'not recorded'}",
+        f"Section path: {section_path} | Segment: {row.get('segment_number') or 'not recorded'}",
+    ]
+    if provenance:
+        lines.append("Import provenance: " + "; ".join(provenance))
+    if truncated:
+        lines.append(f"Text preview ({len(text):,} of {text_length:,} characters; use get_midrash_text for the full passage):")
+    else:
+        lines.append(f"Text ({text_length:,} characters):")
+    lines.append(text)
+    return "\n".join(lines)
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request):
@@ -163,6 +222,7 @@ async def health(request):
         payload = dict(counts)
         if payload["last_imported_at"] is not None:
             payload["last_imported_at"] = payload["last_imported_at"].isoformat()
+        payload["schema_version"] = await schema_version(p)
         return JSONResponse({"status": "ok", "service": "midrash-mcp", **payload})
     except Exception:
         logger.exception("Health check failed")
@@ -229,15 +289,14 @@ async def search_midrash(query: str, work: str | None = None, category: str | No
         exact_filters.append(f"e.language = ${n}"); exact_params.append(language); n += 1
     exact_params.append(limit)
     rows = await p.fetch(f"""
-        SELECT s.sefaria_ref, left(s.text, 900) AS text, w.sefaria_title AS work_title,
-               e.language, e.version_title, e.license, e.version_source AS source_url
+        SELECT {PREVIEW_COLUMNS}
         FROM segments s JOIN works w ON w.id=s.work_id JOIN editions e ON e.id=s.edition_id
         WHERE {' AND '.join(exact_filters)}
         ORDER BY e.is_primary DESC NULLS LAST, e.language, e.version_title
         LIMIT ${n}
     """, *exact_params)
     if rows:
-        return "## Exact Midrash reference\n\n" + "\n\n---\n\n".join(format_result(dict(r)) for r in rows)
+        return "## Exact Midrash reference\n\n" + "\n\n---\n\n".join(format_result(dict(r), preview=True) for r in rows)
 
     # PostgreSQL on this host is SQL_ASCII. Route Hebrew through a Unicode-aware
     # Python normalizer rather than risking a server-side encoding error.
@@ -248,7 +307,7 @@ async def search_midrash(query: str, work: str | None = None, category: str | No
             return str(exc)
         if not hebrew_rows:
             return f"No Hebrew Midrash results found for '{raw_query}'."
-        return "## Hebrew-normalized search results\n\n" + "\n\n---\n\n".join(format_result(row) for row in hebrew_rows)
+        return "## Hebrew-normalized search results\n\n" + "\n\n---\n\n".join(format_result(row, preview=True) for row in hebrew_rows)
 
     cleaned = clean_query(raw_query)
     if not cleaned:
@@ -267,8 +326,7 @@ async def search_midrash(query: str, work: str | None = None, category: str | No
         filters.append(f"e.language = ${n}"); params.append(language); n += 1
     params.append(limit)
     rows = await p.fetch(f"""
-        SELECT s.sefaria_ref, left(s.text, 900) AS text, w.sefaria_title AS work_title,
-               e.language, e.version_title, e.license, e.version_source AS source_url,
+        SELECT {PREVIEW_COLUMNS},
                ts_rank_cd(s.search_vector, {tsquery}) AS relevance
         FROM segments s JOIN works w ON w.id=s.work_id JOIN editions e ON e.id=s.edition_id
         WHERE {' AND '.join(filters)}
@@ -279,23 +337,21 @@ async def search_midrash(query: str, work: str | None = None, category: str | No
         mode = "phrase " if phrase else ""
         return f"No {mode}Midrash results found for '{raw_query}'."
     title = "Phrase search results" if phrase else "Midrash search results"
-    return f"## {title}\n\n" + "\n\n---\n\n".join(format_result(dict(r)) for r in rows)
+    return f"## {title}\n\n" + "\n\n---\n\n".join(format_result(dict(r), preview=True) for r in rows)
 
 @mcp.tool()
 async def get_midrash_text(ref: str, language: str = "en", edition: str | None = None) -> str:
     """Retrieve the exact text for a Sefaria reference and language/edition."""
     p = await pool()
     if edition:
-        row = await p.fetchrow("""
-            SELECT s.sefaria_ref,s.text,w.sefaria_title AS work_title,e.language,e.version_title,
-                   e.license,e.version_source AS source_url
+        row = await p.fetchrow(f"""
+            SELECT {FULL_COLUMNS}
             FROM segments s JOIN works w ON w.id=s.work_id JOIN editions e ON e.id=s.edition_id
             WHERE s.sefaria_ref=$1 AND e.language=$2 AND e.version_title ILIKE $3 LIMIT 1
         """, ref, language, f"%{edition}%")
     else:
-        row = await p.fetchrow("""
-            SELECT s.sefaria_ref,s.text,w.sefaria_title AS work_title,e.language,e.version_title,
-                   e.license,e.version_source AS source_url
+        row = await p.fetchrow(f"""
+            SELECT {FULL_COLUMNS}
             FROM segments s JOIN works w ON w.id=s.work_id JOIN editions e ON e.id=s.edition_id
             WHERE s.sefaria_ref=$1 AND e.language=$2
             ORDER BY e.is_primary DESC NULLS LAST, e.version_title LIMIT 1
@@ -319,10 +375,8 @@ async def get_midrash_parallel(ref: str, english_edition: str | None = None,
 
     async def fetch(language: str, requested_edition: str | None):
         if requested_edition:
-            return await p.fetchrow("""
-                SELECT s.sefaria_ref, s.text, w.sefaria_title AS work_title,
-                       e.language, e.version_title, e.license,
-                       e.version_source AS source_url
+            return await p.fetchrow(f"""
+                SELECT {FULL_COLUMNS}
                 FROM segments s
                 JOIN works w ON w.id=s.work_id
                 JOIN editions e ON e.id=s.edition_id
@@ -331,10 +385,8 @@ async def get_midrash_parallel(ref: str, english_edition: str | None = None,
                 ORDER BY e.is_primary DESC NULLS LAST, e.version_title
                 LIMIT 1
             """, ref, language, f"%{requested_edition}%")
-        return await p.fetchrow("""
-            SELECT s.sefaria_ref, s.text, w.sefaria_title AS work_title,
-                   e.language, e.version_title, e.license,
-                   e.version_source AS source_url
+        return await p.fetchrow(f"""
+            SELECT {FULL_COLUMNS}
             FROM segments s
             JOIN works w ON w.id=s.work_id
             JOIN editions e ON e.id=s.edition_id
@@ -350,32 +402,12 @@ async def get_midrash_parallel(ref: str, english_edition: str | None = None,
 
     lines = [f"## Parallel Midrash text: {ref}", ""]
     if english:
-        e = dict(english)
-        lines.extend([
-            "### English",
-            f"Work: **{e['work_title']}**",
-            f"Edition: {e['version_title']}",
-            f"License: {e.get('license') or 'Not specified'}",
-            f"Source: {e.get('source_url') or 'https://www.sefaria.org/'}",
-            "",
-            e['text'],
-            "",
-        ])
+        lines.extend(["### English", format_result(dict(english)), ""])
     else:
         lines.extend(["### English", f"No English edition is available for `{ref}`.", ""])
 
     if hebrew:
-        h = dict(hebrew)
-        lines.extend([
-            "### Hebrew",
-            f"Work: **{h['work_title']}**",
-            f"Edition: {h['version_title']}",
-            f"License: {h.get('license') or 'Not specified'}",
-            f"Source: {h.get('source_url') or 'https://www.sefaria.org/'}",
-            "",
-            h['text'],
-            "",
-        ])
+        lines.extend(["### Hebrew", format_result(dict(hebrew)), ""])
     else:
         lines.extend(["### Hebrew", f"No Hebrew edition is available for `{ref}`.", ""])
 
@@ -396,46 +428,147 @@ async def get_midrash_parallel(ref: str, english_edition: str | None = None,
 
 @mcp.tool()
 async def list_midrash_editions(work: str) -> str:
-    """List editions imported for one Midrash work."""
+    """List editions and their licence/import provenance for matching works."""
     p = await pool()
     rows = await p.fetch("""
-        SELECT w.sefaria_title,e.language,e.version_title,e.version_source,e.license,
-               e.is_source,e.is_primary,count(s.id) AS segments
+        SELECT w.sefaria_title,e.id AS edition_id,e.language,e.version_title,e.version_source,e.license,
+               e.is_source,e.is_primary,e.metadata,count(s.id) AS segments
         FROM works w JOIN editions e ON e.work_id=w.id LEFT JOIN segments s ON s.edition_id=e.id
-        WHERE w.sefaria_title ILIKE $1 GROUP BY w.id,e.id ORDER BY e.language,e.version_title
+        WHERE w.sefaria_title ILIKE $1 GROUP BY w.id,e.id ORDER BY w.sefaria_title,e.language,e.version_title
     """, f"%{work}%")
     if not rows:
         return f"No imported work matches '{work}'."
-    return "## Editions\n\n" + "\n".join(
-        f"- {r['language']}: **{r['version_title']}** — {r['segments']} segments; "
-        f"license={r['license'] or 'unspecified'}; source={r['version_source'] or 'unspecified'}"
-        for r in rows
-    )
+    lines = [f"## Editions matching {work}", ""]
+    for row in rows:
+        metadata = row["metadata"] or {}
+        status = metadata.get("licence_status") or "not recorded"
+        lines.append(
+            f"- **{row['sefaria_title']}** — edition {row['edition_id']}; {row['language']}: **{row['version_title']}**; "
+            f"{row['segments']} segments; source={bool(row['is_source'])}; primary={bool(row['is_primary'])}; "
+            f"license={row['license'] or 'unspecified'}; licence_status={status}; "
+            f"version_source={row['version_source'] or 'not recorded'}"
+        )
+    return "\n".join(lines)
 
 @mcp.tool()
-async def get_midrash_metadata(work: str) -> str:
-    """Return work metadata, categories, and source information."""
+async def get_midrash_metadata(work: str, exact_title: bool = False) -> str:
+    """Return human-readable work and edition provenance; exact_title disambiguates matches."""
     p = await pool()
-    row = await p.fetchrow("SELECT * FROM works WHERE sefaria_title ILIKE $1 LIMIT 1", f"%{work}%")
-    if not row:
-        return f"No imported work matches '{work}'."
-    r = dict(row)
-    return (f"## {r['sefaria_title']}\n\nHebrew title: {r.get('hebrew_title') or 'not recorded'}\n"
-            f"Corpus: {r.get('corpus') or 'not recorded'}\nCategories: {', '.join(r['categories'] or [])}\n"
-            f"Description: {r.get('description') or 'not recorded'}\n"
-            f"Sefaria source: {r.get('source_url') or 'not recorded'}")
-
-@mcp.tool()
-async def get_related_sources(ref: str) -> str:
-    """List imported Sefaria links associated with a reference, if available."""
-    p = await pool()
-    rows = await p.fetch("""
-        SELECT source_ref,target_ref,link_type,metadata FROM source_links
-        WHERE source_ref=$1 OR target_ref=$1 ORDER BY id LIMIT 50
-    """, ref)
+    operator = "=" if exact_title else "ILIKE"
+    value = work if exact_title else f"%{work}%"
+    rows = await p.fetch(f"""
+        SELECT id,sefaria_title,hebrew_title,categories,corpus,description,source_url,discovered_at,metadata
+        FROM works WHERE sefaria_title {operator} $1 ORDER BY sefaria_title LIMIT 20
+    """, value)
     if not rows:
-        return f"No imported source links found for {ref}."
-    return "\n".join(f"- {r['source_ref']} → {r['target_ref']} ({r['link_type'] or 'link'})" for r in rows)
+        return f"No imported work matches '{work}'."
+    lines = [f"## Work provenance for {work} (matched {len(rows)})", ""]
+    for row in rows:
+        r = dict(row)
+        lines.extend([
+            f"### {r['sefaria_title']} (work id {r['id']})",
+            f"Hebrew title: {r.get('hebrew_title') or 'not recorded'}",
+            f"Corpus: {r.get('corpus') or 'not recorded'} | Categories: {', '.join(r.get('categories') or []) or 'not recorded'}",
+            f"Description: {r.get('description') or 'not recorded'}",
+            f"Sefaria source: {r.get('source_url') or 'not recorded'}",
+            f"Discovered: {r.get('discovered_at')}",
+        ])
+        work_meta = r.get("metadata") or {}
+        useful = {key: work_meta[key] for key in ("era", "composition_date", "publication_date", "authors", "metadata_source") if work_meta.get(key)}
+        if useful:
+            lines.append("Work metadata: " + compact_json(useful))
+        editions = await p.fetch("""
+            SELECT id,language,version_title,version_source,license,is_source,is_primary,metadata
+            FROM editions WHERE work_id=$1 ORDER BY language,version_title
+        """, r["id"])
+        lines.append("Editions:")
+        for edition in editions:
+            e = dict(edition)
+            meta = e.get("metadata") or {}
+            lines.append(
+                f"- edition {e['id']}: {e['language']} / {e['version_title']}; license={e['license'] or 'not specified'}; "
+                f"source={e['version_source'] or 'not recorded'}; source_edition={bool(e['is_source'])}; primary={bool(e['is_primary'])}; "
+                f"import={meta.get('export_generated_at') or 'not recorded'}; licence_status={meta.get('licence_status') or 'not recorded'}"
+            )
+    return "\n".join(lines)
+
+@mcp.tool()
+async def get_import_history(work: str | None = None, limit: int = 50) -> str:
+    """List ingestion batches with exact source URLs, timestamps, counts, and hashes."""
+    p = await pool()
+    limit = max(1, min(limit, 200))
+    if work:
+        rows = await p.fetch("""
+            SELECT m.work_title,m.language,m.version_title,m.source_url,m.export_generated_at,m.imported_at,m.segment_count,
+                   e.id AS edition_id,e.metadata
+            FROM ingestion_manifest m
+            LEFT JOIN works w ON w.sefaria_title=m.work_title
+            LEFT JOIN editions e ON e.work_id=w.id AND e.language=m.language AND e.version_title=m.version_title
+            WHERE m.work_title ILIKE $1 ORDER BY m.imported_at DESC LIMIT $2
+        """, f"%{work}%", limit)
+    else:
+        rows = await p.fetch("""
+            SELECT m.work_title,m.language,m.version_title,m.source_url,m.export_generated_at,m.imported_at,m.segment_count,
+                   e.id AS edition_id,e.metadata
+            FROM ingestion_manifest m
+            LEFT JOIN works w ON w.sefaria_title=m.work_title
+            LEFT JOIN editions e ON e.work_id=w.id AND e.language=m.language AND e.version_title=m.version_title
+            ORDER BY m.imported_at DESC LIMIT $1
+        """, limit)
+    if not rows:
+        return "No ingestion history recorded."
+    lines = [f"## Midrash import history ({len(rows)} records)", ""]
+    for row in rows:
+        meta = row["metadata"] or {}
+        lines.append(
+            f"- {row['work_title']} / {row['language']} / {row['version_title']} (edition {row['edition_id'] or 'unknown'}): "
+            f"{row['segment_count']} segments; export={row['export_generated_at']}; imported={row['imported_at']}; "
+            f"sha256={meta.get('content_sha256') or 'not recorded'}; source={row['source_url']}"
+        )
+    return "\n".join(lines)
+
+@mcp.tool()
+async def get_related_sources(ref: str, link_type: str | None = None,
+                              offset: int = 0, limit: int = 20,
+                              detail: bool = True) -> str:
+    """List imported Sefaria links with source-export provenance and pagination."""
+    p = await pool()
+    offset = max(0, offset)
+    limit = max(1, min(limit, 50))
+    filters = ["(source_ref=$1 OR target_ref=$1)"]
+    params: list[Any] = [ref]
+    n = 2
+    if link_type:
+        filters.append(f"link_type=${n}")
+        params.append(link_type)
+        n += 1
+    params.extend([limit, offset])
+    rows = await p.fetch(f"""
+        SELECT source_ref,target_ref,link_type,metadata
+        FROM source_links
+        WHERE {' AND '.join(filters)}
+        ORDER BY CASE WHEN link_type IN ('quotation','midrash','commentary') THEN 0 ELSE 1 END, id
+        LIMIT ${n} OFFSET ${n + 1}
+    """, *params)
+    if not rows:
+        return f"No imported source links found for {ref} at offset {offset}."
+    lines = [f"## Related Sefaria sources for {ref} (offset {offset}, returned {len(rows)})", ""]
+    for row in rows:
+        line = f"- {row['source_ref']} → {row['target_ref']} ({row['link_type'] or 'link'})"
+        if detail:
+            metadata = row["metadata"] or {}
+            details = []
+            for key in ("midrash_work", "source_export", "citation_1", "citation_2", "category_1", "category_2"):
+                if metadata.get(key):
+                    details.append(f"{key}={metadata[key]}")
+            for key in ("text_1", "text_2"):
+                if metadata.get(key):
+                    value = str(metadata[key])
+                    details.append(f"{key}={value[:280]}{'…' if len(value) > 280 else ''}")
+            if details:
+                line += "\n  Provenance: " + "; ".join(details)
+        lines.append(line)
+    return "\n".join(lines)
 
 if __name__ == "__main__":
     mcp.run("streamable-http")

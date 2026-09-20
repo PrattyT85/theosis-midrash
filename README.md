@@ -37,8 +37,9 @@ The server exposes:
 - `list_midrash_editions`
 - `get_related_sources`
 - `get_midrash_metadata`
+- `get_import_history`
 
-Results identify the exact work, Sefaria reference, edition, language, licence, and source URL where available.
+Results identify the exact work, Sefaria reference, edition, language, licence, source URL, edition flags, import snapshot, and schema version where available.
 
 ## Requirements
 
@@ -86,6 +87,17 @@ export MIDRASH_DATABASE_URL='postgresql://midrash@/midrash?host=/var/run/postgre
 All import and upgrade scripts honour `MIDRASH_DATABASE_URL`. A `--db` option
 is also available on the main importer and takes precedence over the
 environment.
+
+Track and apply future migrations with:
+
+```bash
+python scripts/migrate.py --status
+python scripts/migrate.py
+```
+
+The runner applies migrations in numeric order, records SHA-256 checksums, and
+fails if an already-applied migration file is changed. The existing indexed
+search migration is safe to record retroactively because its SQL is idempotent.
 
 Import the initial bilingual corpus:
 

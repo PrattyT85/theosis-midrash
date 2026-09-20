@@ -19,6 +19,14 @@ SET row_security = off;
 
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
+CREATE TABLE public.schema_migrations (
+    version text NOT NULL,
+    name text NOT NULL,
+    checksum text NOT NULL,
+    applied_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT schema_migrations_pkey PRIMARY KEY (version)
+);
+
 
 SET default_tablespace = '';
 
